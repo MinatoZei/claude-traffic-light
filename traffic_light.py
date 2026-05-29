@@ -20,7 +20,10 @@ from pathlib import Path
 
 # ── Config ──────────────────────────────────────────────────────
 
-STATUS_FILE = Path(os.environ["USERPROFILE"]) / ".claude" / "traffic_status.json"
+STATUS_DIR = Path(os.environ["USERPROFILE"]) / ".claude" / "traffic_status"
+STATUS_FILE = Path(os.environ["USERPROFILE"]) / ".claude" / "traffic_status.json"  # legacy
+SLOT_TTL = 30  # seconds before a stale slot is cleaned up
+PRIORITY = {"needs_confirmation": 3, "running": 2, "finished": 1, "idle": 0}
 
 POLL_MS = 500
 FINISHED_TTL = 5  # seconds before "finished" → idle
@@ -52,6 +55,7 @@ BODY_LEFT, BODY_TOP, BODY_RIGHT, BODY_BOTTOM = 4, 4, W - 4, H - 4
 _status = "idle"
 _blink = False
 _finished_at = 0.0
+_session_count = 0
 _win = None
 _canvas = None
 _circle_ids = {}
@@ -73,36 +77,61 @@ def _claude_running():
 
 
 def _read_status():
-    global _finished_at
-    try:
-        if STATUS_FILE.exists():
-            raw = STATUS_FILE.read_bytes()
-            if raw.startswith(b"\xef\xbb\xbf"):
-                raw = raw[3:]
-            data = json.loads(raw)
-            status = data.get("status", "idle")
+    global _finished_at, _session_count
+    now = time.time()
+    best_status = "idle"
+    best_priority = 0
+    active_slots = 0
 
-            if status == "finished":
-                now = time.time()
-                if _finished_at == 0:
-                    _finished_at = now
-                if now - _finished_at >= FINISHED_TTL:
-                    status = "idle"
-                    _finished_at = 0
-                    STATUS_FILE.write_bytes(b'{"status":"idle"}')
-            elif status == "idle":
-                _finished_at = 0
-            else:
-                _finished_at = 0
+    if STATUS_DIR.exists():
+        for f in STATUS_DIR.glob("*.json"):
+            if f.name.startswith("__"):
+                continue
+            try:
+                raw = f.read_bytes()
+                if raw.startswith(b"\xef\xbb\xbf"):
+                    raw = raw[3:]
+                data = json.loads(raw)
+                status = data.get("status", "idle")
+                ts = data.get("ts", 0)
 
-            if not _claude_running():
-                status = "idle"
-                _finished_at = 0
+                if now - ts > SLOT_TTL:
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+                    continue
 
-            return status
-    except Exception:
-        pass
-    return "idle" if not _claude_running() else "running"
+                active_slots += 1
+                p = PRIORITY.get(status, 0)
+                if p > best_priority:
+                    best_priority = p
+                    best_status = status
+            except Exception:
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+
+    _session_count = active_slots
+
+    if best_status == "finished":
+        if _finished_at == 0:
+            _finished_at = now
+        if now - _finished_at >= FINISHED_TTL:
+            best_status = "idle"
+            _finished_at = 0
+    elif best_status == "idle":
+        _finished_at = 0
+    else:
+        _finished_at = 0
+
+    if not _claude_running():
+        best_status = "idle"
+        _finished_at = 0
+        _session_count = 0
+
+    return best_status
 
 
 # ── Drawing ─────────────────────────────────────────────────────
@@ -192,7 +221,10 @@ def _poll():
         _canvas.itemconfig(cid, fill=color)
 
     # Update label
-    _canvas.itemconfig(_label_id, text=LABEL.get(_status, ""))
+    label_text = LABEL.get(_status, "")
+    if _session_count > 1:
+        label_text = f"{label_text} ({_session_count})"
+    _canvas.itemconfig(_label_id, text=label_text)
 
     _win.after(POLL_MS, _poll)
 
