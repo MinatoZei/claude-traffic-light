@@ -1,8 +1,8 @@
-# 🚦 Claude Code Traffic Light · Claude Code 红绿灯
+# 🚦 Claude Code Traffic Light · 桌面红绿灯
 
 <p align="center">
-  <strong>A desktop traffic-light widget that shows Claude Code's status in real time.</strong><br>
-  一个桌面红绿灯小组件，实时显示 Claude Code 的运行状态。
+  <strong>Real-time desktop status indicator for Claude Code CLI — like a traffic light for your AI agent.</strong><br>
+  <strong>Claude Code 命令行桌面状态指示器 — AI 编程时余光一扫，就知道 Claude 在干嘛。</strong>
 </p>
 
 <p align="center">
@@ -10,7 +10,21 @@
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey" alt="Windows 10/11">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen" alt="Zero dependencies">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
+  <img src="https://img.shields.io/badge/topics-claude--code%20%7C%20desktop%20widget%20%7C%20tkinter-blueviolet" alt="Topics">
 </p>
+
+---
+
+## Table of Contents · 目录
+
+- [What it looks like · 长这样](#what-it-looks-like--长这样)
+- [How it works · 原理](#how-it-works--原理)
+- [Quick Start · 快速开始](#quick-start--快速开始)
+- [State Diagram · 状态流转](#state-diagram--状态流转)
+- [Files · 文件说明](#files--文件说明)
+- [Customization · 自定义](#customization--自定义)
+- [Troubleshooting · 故障排查](#troubleshooting--故障排查)
+- [License](#license)
 
 ---
 
@@ -189,3 +203,15 @@ C = {
 ## License
 
 MIT — see [LICENSE](./LICENSE).
+
+---
+
+<!--
+  Keywords for discovery:
+  Claude Code desktop widget, Claude Code traffic light, Claude Code status indicator,
+  Claude Code hooks tutorial, Claude Code Windows tool, Claude Code GUI companion,
+  tkinter desktop pet, Python desktop widget, AI coding assistant status monitor,
+  Claude Code CLI helper, Claude Code权限监控, Claude Code状态指示器,
+  Claude Code桌面组件, Claude Code红绿灯, Claude Code hooks配置,
+  AI编程辅助工具, 桌面悬浮窗, 系统状态监控
+-->
