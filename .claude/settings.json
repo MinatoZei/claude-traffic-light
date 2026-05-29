@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "D:\\claude_project\\.claude\\hooks\\traffic-update.cmd running"
+            "command": ".claude\\hooks\\traffic-update.cmd running"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "D:\\claude_project\\.claude\\hooks\\traffic-update.cmd finished"
+            "command": ".claude\\hooks\\traffic-update.cmd finished"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "D:\\claude_project\\.claude\\hooks\\traffic-update.cmd needs_confirmation"
+            "command": ".claude\\hooks\\traffic-update.cmd needs_confirmation"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "D:\\claude_project\\.claude\\hooks\\traffic-update.cmd running"
+            "command": ".claude\\hooks\\traffic-update.cmd running"
           }
         ]
       }

@@ -1,14 +1,16 @@
 # Python
 __pycache__/
 *.pyc
+*.pyo
 
-# Temp files
+# Temp / debug files
 tmp_*
 verify_*
 final_*
 document_xml.txt
 inject_fn_v2.py
 rebuild_*.py
+test_*.py
 
 # Project cruft
 =0.6.21
@@ -16,9 +18,24 @@ rebuild_*.py
 npm_cache/
 projects/
 
-# Env
+# Environment
 .env
 
-# IDE
+# IDE / editor
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Claude Code session files (personal)
+.claude/plugins/
+.claude/skills/
+.claude/hooks/hooks.json
+.claude/hooks/hooks-cursor.json
+.claude/hooks/run-hook.cmd
+.claude/hooks/session-start
