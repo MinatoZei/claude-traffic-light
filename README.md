@@ -53,23 +53,27 @@ A tiny black rounded-rectangle sits on your desktop, always on top. The active l
 ## How it works · 原理
 
 ```
-┌──────────────────┐          ┌────────────────────────┐
-│  traffic_light.py │  reads   │  traffic_status.json   │
-│  (tkinter widget) │◄─────────│  ~/.claude/            │
-│  polls every 0.5s │          └────────────────────────┘
-└──────────────────┘                    ▲
-                                        │ writes
-┌──────────────────┐          ┌────────────────────────┐
-│  Claude Code      │─────────►│  .claude/settings.json │
-│  hook events      │          │  UserPromptSubmit      │
-│                   │          │  PreToolUse / Post     │
-│                   │          │  Stop                  │
-└──────────────────┘          └────────────────────────┘
+┌──────────────────┐          ┌──────────────────────────┐
+│  traffic_light.py │  reads   │  traffic_status/         │
+│  (tkinter widget) │◄─────────│  ~/.claude/              │
+│  polls every 0.5s │          │    <PID>.json            │
+│  aggregates all   │          │    <PID>.json            │
+│  slots by priority│          └──────────────────────────┘
+└──────────────────┘                      ▲
+                                          │ writes per session
+┌──────────────────┐          ┌──────────────────────────┐
+│  Claude Code      │─────────►│  traffic-update.ps1      │
+│  hook events      │          │  finds parent claude PID │
+│                   │          │  UserPromptSubmit        │
+│                   │          │  PreToolUse / Post       │
+│                   │          │  Stop                    │
+└──────────────────┘          └──────────────────────────┘
 ```
 
 1. Claude Code fires hooks when its state changes (prompt submitted, tool permission requested, response finished)
-2. Hooks run `traffic-update.cmd` which writes a tiny JSON file
-3. The Python widget reads the JSON every 500ms and updates the lights
+2. Hooks run `traffic-update.ps1` which finds the parent Claude PID and writes a per-session JSON file
+3. The Python widget reads all slot files every 500ms, picks the highest-priority status, and updates the lights
+4. **Multi-window safe**: each Claude window gets its own slot; the widget aggregates them all
 
 ---
 
@@ -104,11 +108,11 @@ A traffic light appears on the right side of your screen. **Drag** it anywhere w
 
 The hooks configuration lives in `.claude/settings.json`. You need to copy it into the Claude Code project you want to monitor.
 
-**Option A: Single project** — copy `.claude/settings.json` and `.claude/hooks/traffic-update.cmd` into your project's `.claude/` directory.
+**Option A: Single project** — copy `.claude/settings.json` and `.claude/hooks/traffic-update.ps1` into your project's `.claude/` directory.
 
-**Option B: All projects (global)** — merge the `hooks` section into `%USERPROFILE%\.claude\settings.json`, and place `traffic-update.cmd` somewhere on your PATH (or use an absolute path in the hook command).
+**Option B: All projects (global)** — merge the `hooks` section into `%USERPROFILE%\.claude\settings.json`, and place `traffic-update.ps1` somewhere on your PATH (or update the absolute path in the hook command).
 
-将 `.claude/settings.json` 和 `.claude/hooks/traffic-update.cmd` 复制到你的 Claude Code 项目的 `.claude/` 目录下即可。
+将 `.claude/settings.json` 和 `.claude/hooks/traffic-update.ps1` 复制到你的 Claude Code 项目的 `.claude/` 目录下即可。
 
 ### Step 4 — Use Claude Code normally · 开始使用
 
@@ -157,10 +161,11 @@ Restart Claude Code (hooks are loaded at startup), then use it as usual. The lig
 
 | File | Purpose |
 |:------|:--------|
-| `traffic_light.py` | Main widget — zero dependencies, pure Python + tkinter |
+| `traffic_light.py` | Main widget — zero dependencies, pure Python + tkinter, multi-window aggregation |
 | `start_traffic_light.cmd` | One-click launcher (Windows batch) |
 | `.claude/settings.json` | Claude Code hook definitions |
-| `.claude/hooks/traffic-update.cmd` | One-line script that writes the status JSON |
+| `.claude/hooks/traffic-update.ps1` | PowerShell script: finds parent Claude PID, writes per-session status |
+| `.claude/hooks/traffic-update.cmd` | Legacy cmd wrapper (still works, but .ps1 is recommended) |
 | `LICENSE` | MIT |
 
 ---
@@ -192,15 +197,17 @@ C = {
 
 **Lights don't change · 灯不变化**
 - Make sure you restarted Claude Code after adding the hooks configuration.
-- Check that `.claude/settings.json` and `.claude/hooks/traffic-update.cmd` are present in the project you're running `claude` in.
-- Verify `%USERPROFILE%\.claude\traffic_status.json` exists and is being written to.
+- Check that `.claude/settings.json` and `.claude/hooks/traffic-update.ps1` are present in the project you're running `claude` in.
+- Verify `%USERPROFILE%\.claude\traffic_status\` directory exists and contains `<PID>.json` files.
+- Run `powershell -File .claude\hooks\traffic-update.ps1 -Status running` manually to test.
 
 **Widget window not showing · 窗口看不到**
-- The window appears at the right edge of your screen, vertically centered. Check if it's behind other windows (use Alt+Tab to find it, though it has no taskbar entry).
+- The window appears at the right edge of your screen, vertically centered. It has no taskbar entry.
 - If you have multiple monitors, it appears on the primary monitor.
 
-**Path errors in hooks · 路径错误**
-- The hook command uses a relative path: `.claude\\hooks\\traffic-update.cmd`. Claude Code runs hook commands from the project root. If this doesn't work on your system, replace it with an absolute path in `settings.json`.
+**Multi-window not aggregating · 多窗口不聚合**
+- Each Claude window must have its own copy of `.claude/settings.json` and `.claude/hooks/traffic-update.ps1`.
+- The widget label shows the active session count, e.g. "Running (2)" means 2 windows are connected.
 
 ---
 
