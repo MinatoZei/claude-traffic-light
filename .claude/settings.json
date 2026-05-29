@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "D:\\claude_project\\.claude\\hooks\\traffic-update.cmd running"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "D:\\claude_project\\.claude\\hooks\\traffic-update.cmd finished"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "D:\\claude_project\\.claude\\hooks\\traffic-update.cmd needs_confirmation"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "D:\\claude_project\\.claude\\hooks\\traffic-update.cmd running"
+          }
+        ]
+      }
+    ]
+  }
+}

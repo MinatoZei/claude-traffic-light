@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+
+# Temp files
+tmp_*
+verify_*
+final_*
+document_xml.txt
+inject_fn_v2.py
+rebuild_*.py
+
+# Project cruft
+=0.6.21
+=7.2.8
+npm_cache/
+projects/
+
+# Env
+.env
+
+# IDE
+.vscode/
+.idea/
