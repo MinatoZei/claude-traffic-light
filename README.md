@@ -30,6 +30,10 @@
 
 ## What it looks like · 长这样
 
+<p align="center">
+  <img src="screenshot.png" width="176" alt="Claude Code Traffic Light screenshot — red light blinking">
+</p>
+
 ```
         ┌──────┐
         │  🔴  │ ← Red 红灯 — Needs confirmation 等待确认
