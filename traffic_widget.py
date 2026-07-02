@@ -470,7 +470,7 @@ class Widget:
         tl = tk.Label(tf, text=title, font=self.f_title, fg=FG, bg=BG,
                       anchor="w", cursor="hand2")
         tl.pack(side="left")
-        tl.bind("<Button-1>", lambda e, s_=sid: self._ack(s_))
+        tl.bind("<Button-1>", lambda e, s_=sid: self._row_click(s_))
         tl.bind("<Double-Button-1>", lambda e, s_=sid: self._rename(s_))
         pen = tk.Label(tf, text="✎", font=self.f_sub, fg="#565d68", bg=BG,
                        cursor="hand2", padx=4)
@@ -523,6 +523,57 @@ class Widget:
         if s.get("status") not in ("finished", "needs_confirmation"):
             return False
         return self.acked.get(s.get("sid", "")) != (s.get("status"), s.get("ts"))
+
+    def _row_click(self, sid):
+        """Click a row title: acknowledge + best-effort jump to its terminal."""
+        self._ack(sid)
+        s = self.slots.get(sid)
+        if s:
+            self._focus_terminal(s)
+
+    def _focus_terminal(self, s):
+        """Bring the window whose title mentions this session's folder to the
+        foreground. Claude Code writes the folder name into the terminal title,
+        so title matching finds the right window. Windows Terminal windows
+        (CASCADIA class) are preferred over anything else (e.g. VS Code).
+        Tab-level focus is impossible — WT has no per-tab API — so with many
+        tabs in one window we can only raise that window. Windows-only no-op
+        elsewhere."""
+        if sys.platform != "win32":
+            return
+        proj = (s.get("project") or "").strip()
+        if not proj or proj == "?":
+            return
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            wt_hits, any_hits = [], []
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+            def cb(hwnd, _):
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                tb = ctypes.create_unicode_buffer(512)
+                user32.GetWindowTextW(hwnd, tb, 512)
+                title = tb.value
+                if not title or proj.lower() not in title.lower():
+                    return True
+                cb_ = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, cb_, 256)
+                (wt_hits if "CASCADIA" in cb_.value.upper() else any_hits).append(hwnd)
+                return True
+
+            user32.EnumWindows(cb, 0)
+            hits = wt_hits or any_hits
+            if not hits:
+                return
+            hwnd = hits[0]
+            user32.ShowWindow(hwnd, 9)                    # SW_RESTORE
+            user32.keybd_event(0x12, 0, 0, 0)             # Alt down: allows
+            user32.SetForegroundWindow(hwnd)              # SetForegroundWindow
+            user32.keybd_event(0x12, 0, 2, 0)             # Alt up
+        except Exception:
+            pass
 
     # ---- rename (double-click a row title) -----------------------------------
     def _save_names(self):
