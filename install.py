@@ -33,6 +33,7 @@ OUR = {
     "SessionStart": "idle",
     "UserPromptSubmit": "running",
     "Notification": "needs_confirmation",
+    "PostToolUse": "running",    # flips 待确认 back after approval; throttled
     "Stop": "finished",
     "SubagentStart": "agent",    # hint unused; dispatched by event name
     "SubagentStop": "agent",

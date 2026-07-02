@@ -208,6 +208,21 @@ def main():
         # auth_success / elicitation_complete / ... : ignore
         return
 
+    if name == "PostToolUse":
+        # a tool just finished -> definitely working. This is what flips
+        # needs_confirmation back to running after the user approves a
+        # permission/plan prompt (approval itself fires no hook event).
+        # Throttled: skip the disk write while already running with a fresh
+        # heartbeat, so per-tool churn stays negligible.
+        prev = read_slot(sid) or {}
+        st = prev.get("status")
+        if st == "finished":
+            return                      # never resurrect a finished row
+        if st == "running" and time.time() - (prev.get("ts") or 0) < 25:
+            return
+        write_slot(sid, "running", project, named)
+        return
+
     if name in ("SubagentStart", "SubagentStop"):
         prev = read_slot(sid) or {}
         n = prev.get("agents", 0) or 0
