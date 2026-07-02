@@ -23,10 +23,23 @@ import json
 import time
 
 STATUS_DIR = os.path.expanduser("~/.claude/traffic_status")
+NAMES_FILE = os.path.join(STATUS_DIR, "__names")  # {sid: alias}, widget-written
 
 
 def _slot(sid):
     return os.path.join(STATUS_DIR, "%s.json" % sid)
+
+
+def load_alias(sid):
+    """Per-session display alias set from the widget (✎ rename). Wins over
+    every other name for the terminal title so a rename isn't clobbered back
+    to the folder name by the next hook event."""
+    try:
+        with open(NAMES_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return (d.get(sid) or "").strip() if isinstance(d, dict) else ""
+    except Exception:
+        return ""
 
 
 def resolve_name(ev):
@@ -106,19 +119,19 @@ def _find_tty():
     return None
 
 
-def set_terminal_title(status, project):
-    """Write '🔵 project' into the tab title (OSC 0), straight to the session's
+def set_terminal_title(status, name, tty):
+    """Write '🔵 name' into the tab title (OSC 0), straight to the session's
     pts — NOT stdout, so Claude's context stays clean. Turns anonymous 'Ubuntu'
     tabs into readable, per-session titles and gives the widget's
-    click-to-jump matching something to find. Disable with CCTL_NO_TITLE=1."""
-    if os.environ.get("CCTL_NO_TITLE") or not project or project == "?":
-        return
-    tty = _find_tty()
-    if not tty:
+    click-to-jump matching something to find. Disable with CCTL_NO_TITLE=1.
+    NOTE: only takes effect in launch modes where the terminal honors
+    application titles (e.g. PowerShell tab -> `wsl`); the Windows Terminal
+    Ubuntu profile force-pins the title to 'Ubuntu' (WSL#8701)."""
+    if os.environ.get("CCTL_NO_TITLE") or not name or name == "?" or not tty:
         return
     try:
         with open(tty, "w") as t:
-            t.write("\033]0;%s %s\007" % (STATUS_MARK.get(status, ""), project))
+            t.write("\033]0;%s %s\007" % (STATUS_MARK.get(status, ""), name))
     except OSError:
         pass
 
@@ -148,14 +161,23 @@ def write_slot(sid, status, project, named, model=None, tokens=None, agents=None
         tokens = prev.get("tokens")
     if agents is None and prev:
         agents = prev.get("agents", 0)
+    tty = _find_tty()
+    if not tty:                      # e.g. no controlling pts on this event
+        if prev is None:
+            prev = read_slot(sid)
+        tty = (prev or {}).get("tty")
     data = {"status": status, "ts": int(time.time()),
             "project": project or "?", "named": bool(named), "sid": sid,
-            "model": model, "tokens": tokens, "agents": agents or 0}
+            "model": model, "tokens": tokens, "agents": agents or 0,
+            "tty": tty}              # lets the widget push a title immediately
     tmp = _slot(sid) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
     os.replace(tmp, _slot(sid))  # atomic
-    set_terminal_title(status, data["project"])
+    # widget-side per-session alias (if any) beats CCTL_NAME / .cctl-name /
+    # folder name for the tab title; the slot's project field stays the real
+    # folder name (stickiness + jump matching depend on it).
+    set_terminal_title(status, load_alias(sid) or data["project"], tty)
 
 
 def remove_slot(sid):

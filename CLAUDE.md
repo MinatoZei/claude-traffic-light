@@ -113,3 +113,4 @@ python3 <本仓库路径>/uninstall.py   # 按 marker 移除 hooks + 还原 stat
 8. widget 里 `__` 前缀文件是内部状态(位置/别名/刷新标记),扫描 slot 时必须跳过;`ratelimits.json` 同理。
 9. 限额数据拿不到就隐藏,**绝不显示估算的假进度条**。
 10. tkinter 光标名/字体等平台差异要 try/except 回退(如 `size_nw_se` 是 Windows 专属)。
+11. `__names` 别名表按 **sid** 键存(会话级),绝不能按 project 目录名键存——多个会话常共用同一目录,项目级别名会让一个改名污染同目录所有新会话。alias 只影响"显示 + tab 标题";slot 的 `project` 字段必须始终是真实目录名(stickiness 回填、跳转匹配都依赖它)。

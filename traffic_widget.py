@@ -32,9 +32,11 @@ run inside WSL for debugging.
 Forked from weilizhe8-del/claude-code-traffic-light (MIT).
 """
 import os
+import re
 import sys
 import json
 import time
+import subprocess
 import tkinter as tk
 
 _DEFAULT_WIN_DIR = r"\\wsl.localhost\Ubuntu\root\.claude\traffic_status"
@@ -47,7 +49,9 @@ else:
 
 STATE_FILE = os.path.join(STATUS_DIR, "__widget_pos")
 LIMITS_FILE = os.path.join(STATUS_DIR, "ratelimits.json")
-NAMES_FILE = os.path.join(STATUS_DIR, "__names")   # {project_basename: alias}
+NAMES_FILE = os.path.join(STATUS_DIR, "__names")   # {sid: alias} — per SESSION,
+# not per project: several sessions often share one folder, and a rename must
+# never leak onto other/new sessions started from the same directory.
 
 # ---- tunables ---------------------------------------------------------------
 DATA_POLL_MS = 2000
@@ -79,6 +83,14 @@ LABEL = {
 STATUS_FG = dict(DOT, idle=FG_MUTED)
 ORDER = {"needs_confirmation": 0, "running": 1, "finished": 2, "idle": 3}
 FAMILY = "Microsoft YaHei UI"
+STATUS_MARK = {"running": "🔵", "needs_confirmation": "🟡",  # keep = hook's
+               "finished": "🟢", "idle": "⚪"}
+
+
+def wsl_distro():
+    """Distro name out of the \\\\wsl.localhost\\<distro>\\... status dir."""
+    m = re.match(r"^\\\\wsl(?:\.localhost|\$)\\([^\\]+)", STATUS_DIR)
+    return m.group(1) if m else None
 
 
 def format_age(secs):
@@ -461,10 +473,14 @@ class Widget:
         dot.bind("<Button-1>", lambda e, s_=sid: self._ack(s_))
 
         proj = s.get("project") or "?"
-        shown = self.names.get(proj) or proj   # widget-side alias wins
+        alias = self.names.get(sid)            # per-session alias wins
+        shown = alias or proj
         if len(shown) > NAME_MAX:
             shown = shown[:NAME_MAX - 1] + "…"
-        title = shown if s.get("named") else "%s·%s" % (shown, (sid or "")[:6])
+        if alias or s.get("named"):            # alias is unique already
+            title = shown
+        else:
+            title = "%s·%s" % (shown, (sid or "")[:6])
         tf = tk.Frame(row, bg=BG)
         tf.grid(row=0, column=1, sticky="w")
         tl = tk.Label(tf, text=title, font=self.f_title, fg=FG, bg=BG,
@@ -541,8 +557,12 @@ class Widget:
         elsewhere."""
         if sys.platform != "win32":
             return
+        # the tab title may carry the per-session alias (after a rename) or the
+        # raw folder name — try both
+        alias = (self.names.get(s.get("sid", "")) or "").strip()
         proj = (s.get("project") or "").strip()
-        if not proj or proj == "?":
+        needles = [n.lower() for n in (alias, proj) if n and n != "?"]
+        if not needles:
             return
         try:
             import ctypes
@@ -578,7 +598,10 @@ class Widget:
                     return True
                 tb = ctypes.create_unicode_buffer(512)
                 user32.GetWindowTextW(hwnd, tb, 512)
-                if not tb.value or proj.lower() not in tb.value.lower():
+                if not tb.value:
+                    return True
+                low = tb.value.lower()
+                if not any(n in low for n in needles):
                     return True
                 exe = exe_of(hwnd)
                 if exe not in TERM_EXES:
@@ -601,6 +624,9 @@ class Widget:
 
     # ---- rename (double-click a row title) -----------------------------------
     def _save_names(self):
+        # keyed by sid (session-scoped); prune sessions that are gone — this
+        # also flushes any legacy project-keyed entries from older versions
+        self.names = {k: v for k, v in self.names.items() if k in self.slots}
         try:
             tmp = NAMES_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -609,11 +635,33 @@ class Widget:
         except OSError:
             pass
 
+    def _push_title(self, s, name):
+        """Rewrite the session's terminal tab title right now via wsl.exe (the
+        hook keeps it in sync on later events, but that only fires on the next
+        event). Best effort: silently skipped without a recorded tty / off
+        Windows / on any failure."""
+        tty = (s or {}).get("tty")
+        if sys.platform != "win32" or not tty or not name or name == "?":
+            return
+        try:
+            cmd = ["wsl.exe"]
+            d = wsl_distro()
+            if d:
+                cmd += ["-d", d]
+            mark = STATUS_MARK.get(s.get("status"), "")
+            cmd += ["--", "sh", "-c",
+                    'printf "\\033]0;%s\\007" "$1" > ' + tty,   # title via $1:
+                    "sh", ("%s %s" % (mark, name)).strip()]     # quoting-safe
+            subprocess.Popen(cmd, creationflags=0x08000000,     # NO_WINDOW
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
     def _rename(self, sid):
         s = self.slots.get(sid)
         if not s:
             return
-        proj = s.get("project") or "?"
         top = tk.Toplevel(self.root)
         top.overrideredirect(True)
         top.attributes("-topmost", True)
@@ -622,17 +670,19 @@ class Widget:
                                  self.root.winfo_pointery() + 8))
         entry = tk.Entry(top, font=self.f_title, bg="#1c1e22", fg=FG,
                          insertbackground=FG, relief="flat", width=16)
-        entry.insert(0, self.names.get(proj, ""))
+        entry.insert(0, self.names.get(sid, ""))
         entry.pack(padx=2, pady=2)
 
         def done(save):
             if save:
                 v = entry.get().strip()
                 if v:
-                    self.names[proj] = v
+                    self.names[sid] = v
                 else:
-                    self.names.pop(proj, None)   # empty = back to folder name
+                    self.names.pop(sid, None)   # empty = back to folder name
                 self._save_names()
+                # sync the terminal tab title immediately (revert on clear)
+                self._push_title(s, v or s.get("project") or "")
                 self.fingerprint = None
                 self._sync()
             top.destroy()
