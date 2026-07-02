@@ -14,7 +14,9 @@ import time
 import shutil
 
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
+STATUS_DIR = os.path.expanduser("~/.claude/traffic_status")
 MARKER = "traffic_hook.py"
+WRAPPER_MARKER = "statusline-ratelimit.sh"
 
 
 def main():
@@ -37,6 +39,23 @@ def main():
             hooks[event] = keep
         else:
             del hooks[event]  # drop the event key if it's now empty
+
+    # restore the statusLine if we wrapped it
+    sl = data.get("statusLine", {})
+    if WRAPPER_MARKER in sl.get("command", ""):
+        orig = ""
+        try:
+            with open(os.path.join(STATUS_DIR, "__orig_statusline"),
+                      "r", encoding="utf-8") as f:
+                orig = f.read().strip()
+        except Exception:
+            pass
+        if orig:
+            sl["command"] = orig
+            print("restored statusLine ->", orig)
+        else:
+            data.pop("statusLine", None)
+            print("removed our statusLine wrapper (no original saved)")
 
     tmp = SETTINGS + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

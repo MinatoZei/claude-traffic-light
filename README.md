@@ -3,11 +3,20 @@
 一个挂在 **Windows 桌面**上的无边框置顶悬浮小窗,列出你在 **WSL 里跑的每个 Claude Code 会话**当前是「运行中 / 已完成 / 待确认 / 空闲」,以及距上次活动多久 —— 多开几个项目时,余光一扫就知道哪个跑完了、哪个还在忙,不用挨个切窗口。
 
 ```
-Claude Code
-🔵 Jianghui-java17 · 3f2ab1   运行中     4s
-🟢 RuoYi-Vue3      · a465cd   已完成    12s
-🟡 keyword-tracker · d6e1f0   待确认     1m
+Claude limits
+5h left 90%                     3h17m
+██████████████████░░
+weekly left 85%                 4d22h
+█████████████████░░░
+🔵 后端                          4s
+   opus-4-8 · 35M tok
+🟢 RuoYi-Vue3·a465cd            12s
+   sonnet-5 · 26M tok
+🟡 爬虫                          1m
+   haiku-4-5 · 1M tok
 ```
+
+状态点颜色:🔵 运行中 · 🟢 已完成/空闲 · 🟡 待确认(闪烁)。
 
 ---
 
@@ -68,11 +77,33 @@ install 会:① 把 hook **合并**进 `~/.claude/settings.json`(append,不动�
 
 **装完重启你的 Claude Code 会话**让 hook 生效,然后在 Windows 上**双击 `start_widget.cmd`** 启动悬浮窗(`pythonw` 无黑框)。
 
+### 给会话起名字
+
+默认那行显示 `文件夹名·会话短id`(如 `opt·2a6472`)。想要看得懂的名字:
+
+- **给项目目录放个 `.cctl-name` 文件**(内容就是名字)→ 该目录所有会话都用这名字,已在跑的下次动作即生效。
+- 或**启动时带环境变量**:`CCTL_NAME=后端 claude` → 这个窗口叫「后端」。
+
+优先级 `CCTL_NAME` > `.cctl-name` > 文件夹名。**一旦有自定义名,那串 hex 短 id 自动隐藏。**
+
+### 模型 · token(自动)
+
+每行副标题的 `模型 · N tok` 在会话答完(`Stop`)时从该会话 transcript 累加得出(含 cache token,与官方 `/usage` 口径一致的累计值)。无需配置。
+
+### 5h / weekly 限额条(可选,需订阅版)
+
+顶部两条额度进度条是**真实数据**,但只有 Claude.ai **Pro/Max 订阅**才由服务端下发(hook 拿不到,只能从 statusLine 抓)。开启:
+
+```bash
+python3 /opt/claude-traffic-light/install.py --with-limits
+```
+它会把你现有的 statusLine 包一层(透传,不影响原状态栏),把 `rate_limits` 抽进 `~/.claude/traffic_status/ratelimits.json`。**下个会话产生第一次响应后**该文件才出现,widget 随即显示两条条;**拿不到就自动不显示(绝不显示假条)**。验证:`cat ~/.claude/traffic_status/ratelimits.json`,`five_used`/`week_used` 非 null 即成。
+
 ## 使用
 
 - 左键拖动挪位置(记忆,下次开在原地);右键关闭。
 - 想开机自启:把 `start_widget.cmd` 的快捷方式丢进 `shell:startup`。
-- 可调项都在 `traffic_widget.py` 顶部常量(刷新间隔、颜色、TTL、宽度)。
+- 可调项都在 `traffic_widget.py` 顶部常量(刷新间隔、颜色、TTL、宽度、名字长度上限)。
 
 ## 卸载
 

@@ -22,7 +22,9 @@ import subprocess
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK_PATH = os.path.join(HERE, "traffic_hook.py")
 WIDGET_SRC = os.path.join(HERE, "traffic_widget.py")
+STATUSLINE_WRAPPER = os.path.join(HERE, "statusline-ratelimit.sh")
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
+STATUS_DIR = os.path.expanduser("~/.claude/traffic_status")
 MARKER = "traffic_hook.py"
 PYBIN = sys.executable or "python3"
 
@@ -72,6 +74,45 @@ def install_hooks():
     print("[hooks] merged into", SETTINGS)
 
 
+def install_limits():
+    """Wrap the existing statusLine so we can capture real 5h/weekly rate limits.
+    Saves the original command to __orig_statusline; idempotent (won't double
+    wrap); relays stdin to the original so the status bar keeps working."""
+    wrapper_cmd = 'bash "%s"' % STATUSLINE_WRAPPER
+    os.makedirs(STATUS_DIR, exist_ok=True)
+    orig_file = os.path.join(STATUS_DIR, "__orig_statusline")
+
+    data = {}
+    if os.path.exists(SETTINGS):
+        with open(SETTINGS, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        shutil.copy2(SETTINGS, "%s.bak-%d" % (SETTINGS, int(time.time())))
+
+    sl = data.setdefault("statusLine", {})
+    cur = sl.get("command", "")
+    if cur and cur != wrapper_cmd:
+        with open(orig_file, "w", encoding="utf-8") as f:
+            f.write(cur)  # remember what to relay to (once)
+    elif not cur and not os.path.exists(orig_file):
+        # no prior statusline: relay to nothing (wrapper just echoes input)
+        open(orig_file, "w").close()
+    sl["type"] = "command"
+    sl["command"] = wrapper_cmd
+
+    tmp = SETTINGS + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, SETTINGS)
+    try:
+        os.chmod(STATUSLINE_WRAPPER, 0o755)
+    except OSError:
+        pass
+    print("[limits] statusLine wrapped ->", wrapper_cmd)
+    print("[limits] original relayed via:", open(orig_file).read().strip() or "(none)")
+    print("[limits] real 5h/weekly bars need a Pro/Max plan; they appear after")
+    print("[limits] the next session's first response writes ratelimits.json")
+
+
 def detect_win_dir():
     for i, a in enumerate(sys.argv):
         if a == "--win-dir" and i + 1 < len(sys.argv):
@@ -113,5 +154,7 @@ def deploy_widget():
 
 if __name__ == "__main__":
     install_hooks()
+    if "--with-limits" in sys.argv:
+        install_limits()
     deploy_widget()
     print("done. restart your Claude Code sessions so the hooks take effect.")
