@@ -26,7 +26,7 @@ weekly left 92%                    4d19h
 - **闪烁提醒 + 点击确认**:已完成/待确认的行会闪,点圆点或标题 = "我知道了"停闪;你直接继续对话也自动停闪
 - **真实限额条**(可选,Pro/Max):5h + weekly 剩余百分比与重置倒计时,数据来自 Anthropic 服务端下发,**绝不估算、拿不到就不显示**;快照 10 分钟节流,⟳ 按钮手动刷新
 - **模型 · token**:从会话 transcript 自动累加(含 cache,与官方 `/usage` 口径一致的累计值)
-- **终端 tab 自动改名**:hook 顺手把终端标题写成 `🔵 项目名`(状态实时变),"Ubuntu" 匿名 tab 一眼可认;面板里 ✎ 改名也会**即时同步到 tab 标题**;点面板行标题可跳转到对应终端窗口(`CCTL_NO_TITLE=1` 可关)。⚠️ 需要用能透传应用标题的方式进 WSL,见 FAQ「tab 标题一直是 Ubuntu」
+- **终端 tab 自动改名**:hook 顺手把终端标题写成 `🔵 项目名`(状态实时变),"Ubuntu" 匿名 tab 一眼可认;面板里 ✎ 改名也会**即时同步到 tab 标题**;点面板行标题可跳转到对应终端窗口(`CCTL_NO_TITLE=1` 可关)。⚠️ 需要用能透传应用标题的方式进 WSL,见[「终端 tab 标题:怎么进 WSL 很重要」](#终端-tab-标题怎么进-wsl-很重要)
 - **零网络请求**:全部数据来自本地文件与 Claude Code 自带的 hook/statusLine 通道
 - **窗口体验**:铁置顶(真 `HWND_TOPMOST`)、拖动、▼ 收起成一条(显示 N会话·N运行·N空闲 汇总)、右下角拖拽改宽、Ctrl+滚轮整体缩放、✕ 关闭;位置/宽度/缩放/收起/已读全部记忆
 - **零第三方依赖**:两端都是 Python 标准库(tkinter)+ bash + jq
@@ -115,6 +115,19 @@ install 是幂等的:反复运行不会叠加;它**只 append 不覆盖**你 set
 
 2/3 是持久命名(跨会话生效);1 是临时的会话级别名,**不会**波及同目录的其它/新会话——想要"这个目录以后都叫 X",用 `.cctl-name`。1/2/3/4 显示时都自动隐藏 hex 短 id。
 
+## 终端 tab 标题:怎么进 WSL 很重要
+
+hook 会把 `🔵 会话名` 用 OSC 转义序列写进会话的 pts,状态一变 tab 标题跟着变;面板 ✎ 改名也即时同步过去;"点行标题跳转到对应终端"靠的同样是这个标题匹配。**但前提是终端愿意接受"应用标题"——这取决于你怎么进的 WSL**:
+
+| 进入方式 | tab 标题 |
+|---|---|
+| ✅ **PowerShell tab 里敲 `wsl` 进入**(推荐) | 应用标题正常透传,自动改名/同步改名/跳转全部生效 |
+| ✅ 自定义 WT profile,`commandline` 填 `wsl.exe -d Ubuntu --cd ~` | 同上(本质就是 wsl.exe 直启) |
+| ❌ Windows Terminal 自带的 **Ubuntu profile** 直开 | Store 版 WSL 把标题强制钉成 "Ubuntu",应用标题被压死([WSL#8701](https://github.com/microsoft/WSL/issues/8701)),一切标题功能无效 |
+| ❌ 手动右键**重命名过**的 tab | WT 会永久锁死该 tab 的应用标题(新开 tab 恢复) |
+
+一句话:**别点 Ubuntu 图标,开个 PowerShell 敲 `wsl`**(或建一个 `wsl.exe` 的自定义 profile 设为默认)。另外 Claude Code 自己也会往标题里写任务摘要,和本工具写的是同一个名字、互不打架,只是本工具多带一个状态圆点。反向同步(tab 上手动改名 → 面板)做不到——WT 没有读 tab 名的 API。不想要标题功能:`CCTL_NO_TITLE=1`。
+
 ## 限额条说明
 
 - 数据来源:Claude Code **statusLine** stdin 里服务端下发的 `rate_limits`(仅 Claude.ai Pro/Max 订阅有);`--with-limits` 会把你现有 statusLine 命令包一层**透传**(原状态栏不受影响),顺手抄 4 个字段落地
@@ -124,11 +137,7 @@ install 是幂等的:反复运行不会叠加;它**只 append 不覆盖**你 set
 ## 常见问题
 
 - **行名显示 `opt·2a6472` 这种?** 那是兜底的"目录名·会话短id"——Claude 还没给这个会话生成名字(刚开的会话干一会儿就有了),等不及就双击标题手动改。
-- **tab 标题一直是 "Ubuntu" 不变?** 取决于你怎么进的 WSL:
-  - 从 Windows Terminal 的 **Ubuntu profile 直开**:Store 版 WSL 会强制把标题钉成 "Ubuntu",应用标题(OSC)被压死([WSL#8701](https://github.com/microsoft/WSL/issues/8701)),自动改名/同步改名都无效;
-  - 从 **PowerShell tab 里敲 `wsl` 进入**:应用标题正常透传,一切生效(实测可用);也可以在 WT 里建一个自定义 profile,`commandline` 填 `wsl.exe -d Ubuntu --cd ~`;
-  - 另外:**手动右键重命名过**的 tab 会被 WT 永久锁死应用标题(新开 tab 恢复);
-  - 终端 → 面板的反向同步做不到(WT 没有读 tab 名的 API)。
+- **tab 标题一直是 "Ubuntu" 不变?** 你是从 WT 的 Ubuntu profile 直开的——见上文[「终端 tab 标题:怎么进 WSL 很重要」](#终端-tab-标题怎么进-wsl-很重要),换成 PowerShell 里敲 `wsl` 进入即可。
 - **状态不更新/功能缺失?** widget 是启动时加载代码的,更新后要**重启 widget**;hook 集合是**会话启动时**定死的,装完 hook 后老会话要重启才上报(`claude -c` 可续上下文)。
 - **"待确认"从来不亮?** 你开了自动批准(auto mode),属正常。
 - **多显示器/发行版不是 Ubuntu?** 启动脚本里 `CLAUDE_TRAFFIC_DIR` 改成你的 `\\wsl.localhost\<发行版>\<home>\.claude\traffic_status`。

@@ -75,7 +75,10 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 
 ### 4. 收尾
 
-告诉用户:**已开着的 Claude Code 会话要重启**(hook 集合在会话启动时定死;`claude -c` 可续上下文)。新会话自动生效。
+告诉用户两件事:
+
+1. **已开着的 Claude Code 会话要重启**(hook 集合在会话启动时定死;`claude -c` 可续上下文)。新会话自动生效。
+2. **tab 标题功能(自动改名/✎ 同步/点击跳转)要求用能透传应用标题的方式进 WSL**:从 PowerShell tab 敲 `wsl` 进入,或建一个 `commandline: wsl.exe -d Ubuntu --cd ~` 的自定义 WT profile。从 WT 自带 Ubuntu profile 直开会被 Store WSL 强制锁标题 "Ubuntu"(WSL#8701),标题类功能全部无效(面板本身不受影响);手动右键改过名的 tab 也会永久锁死应用标题。详见 README「终端 tab 标题」一节。
 
 限额条验证(装了 --with-limits 且有活跃会话后):
 
