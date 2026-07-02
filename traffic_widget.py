@@ -256,9 +256,9 @@ class Widget:
 
         for w in (self.root, self.header, self.head_lbl, self.sum_lbl, self.body):
             self._bind_drag(w)
-        # right-click ANYWHERE quits (Tk events don't bubble from children,
-        # so per-widget binds miss most of the panel surface)
-        self.root.bind_all("<Button-3>", lambda e: self.root.destroy())
+        # right-click ANYWHERE opens a small context menu (quitting directly on
+        # right-click was too easy to trigger by accident — use ✕ or the menu)
+        self.root.bind_all("<Button-3>", self._context_menu)
         for w in (self.header, self.head_lbl, self.sum_lbl):
             w.bind("<Double-Button-1>", self._toggle_collapse)
         self.toggle_lbl.bind("<Button-1>", self._toggle_collapse)  # single click
@@ -341,6 +341,20 @@ class Widget:
         self._save_state()
         self.fingerprint = None      # bar widths depend on width -> rebuild
         self._sync()
+
+    def _context_menu(self, e):
+        m = tk.Menu(self.root, tearoff=0, bg="#1c1e22", fg=FG,
+                    activebackground="#2a2d33", activeforeground=FG,
+                    relief="flat", font=self.f_sub)
+        m.add_command(label="⟳ 刷新限额", command=self._force_refresh)
+        m.add_command(label=("▼ 展开" if self.collapsed else "▶ 收起"),
+                      command=self._toggle_collapse)
+        m.add_separator()
+        m.add_command(label="✕ 关闭面板", command=self.root.destroy)
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
 
     def _force_refresh(self, e=None):
         """⟳: drop the flag so the next statusLine render refreshes the limits
