@@ -96,6 +96,7 @@ install 是幂等的:反复运行不会叠加;它**只 append 不覆盖**你 set
 | `UserPromptSubmit` | 🔵 运行中 |
 | `SubagentStart/Stop` | 🔵 派N个子代理中(计数±1;主回合 Stop 时计数>0 则**保持运行中**) |
 | `Notification`(`permission_prompt`) | 🟡 待确认(闪烁) |
+| `PostToolUse`(节流) | 🔵 运行中(批准确认后翻回;兼作心跳) |
 | `Stop`(无存活子代理) | 🟢 已完成(闪烁至你点击确认) |
 | `SessionEnd` | 移除该行 |
 

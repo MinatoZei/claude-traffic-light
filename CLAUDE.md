@@ -105,7 +105,7 @@ python3 <本仓库路径>/uninstall.py   # 按 marker 移除 hooks + 还原 stat
 
 1. **hook 绝不能往 stdout 打印任何东西**——`SessionStart`/`UserPromptSubmit` 的 stdout 会被注入 Claude 上下文,污染对话。debug 走 stderr,异常吞掉,永远 exit 0。
 2. **写状态文件必须原子**(写 `.tmp` 再 `os.replace`),widget 随时在读。
-3. **不要挂 PreToolUse/PostToolUse**(每次工具调用都触发,高频抖动+假等待);低频事件足够。
+3. **不要挂 PreToolUse**(它在权限判定**之前**触发,会造成"假等待");`PostToolUse` 可以挂但**必须带节流**(已 running 且心跳 <25s 时跳过写盘、finished 不复活)——它是"用户批准确认后翻回运行中"的唯一信号,同时兼作 running 心跳。
 4. `SessionStart` 收到 `source=="compact"` 必须直接 return(上下文压缩不是新会话,不能把 running 打回 idle)。
 5. `Stop` 时若子代理计数>0(等后台 agent),**保持 running 不清零**;计数为 0 的 Stop 才是真完成。
 6. `Notification` 必须按 `notification_type` 分流(`permission_prompt`→待确认,`idle_prompt`→空闲,其余忽略),不能一律当待确认。
