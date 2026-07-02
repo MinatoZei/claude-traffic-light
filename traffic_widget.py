@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
 """Claude Code desktop status widget (frameless, always-on-top).
 
-Layout (mirrors the Codex-style panel):
+Layout (Codex-style panel):
 
-    Claude limits
-    5h left 90%                         3h17m
-    [██████████░]                              <- fill = remaining %, red when low
-    weekly left 85%                     4d22h
+    Claude limits                        ▾
+    5h left 90%                       3h17m
+    [██████████░]
+    weekly left 85%                   4d22h
     [████████░░░]
-    ● 后端                              5s
-      opus-4-8 · 232M tok
+    ● 后端                               5s
+      运行中 · opus-4-8 · 232M tok
     ● RuoYi-Vue3·a465                   12s
-      opus-4-8 · 26M tok
+      已完成 · opus-4-8 · 26M tok
+
+Interactions:
+  * drag anywhere on the header to move (position remembered)
+  * double-click the header  -> collapse to a slim title bar / expand again
+  * drag the bottom-right grip -> resize width freely
+  * Ctrl + mouse wheel       -> scale the whole widget smaller / bigger
+  * right-click              -> quit
+  All of pos / width / scale / collapsed are persisted.
 
 Data:
-  * per-session rows  -> ~/.claude/traffic_status/<session_id>.json written by
-    traffic_hook.py  {status, ts, project, named, sid, model, tokens}
-  * 5h / weekly bars  -> ~/.claude/traffic_status/ratelimits.json written by the
-    statusline wrapper (install.py --with-limits). Real Anthropic numbers, only
-    present for Pro/Max subscribers. If absent, the limits block is simply hidden
-    (never a fake bar).
+  * per-session rows  <- ~/.claude/traffic_status/<session_id>.json (traffic_hook.py)
+  * 5h / weekly bars  <- ratelimits.json (statusline wrapper, Pro/Max only);
+    hidden when absent — never a fake bar.
 
-Runs Windows-side (real HWND_TOPMOST) reading via the \\wsl.localhost UNC path;
-can also run inside WSL for debugging.
+Runs Windows-side (real HWND_TOPMOST) reading via \\wsl.localhost UNC; can also
+run inside WSL for debugging.
 
 Forked from weilizhe8-del/claude-code-traffic-light (MIT).
 """
@@ -40,7 +45,7 @@ elif sys.platform == "win32":
 else:
     STATUS_DIR = os.path.expanduser("~/.claude/traffic_status")
 
-POS_FILE = os.path.join(STATUS_DIR, "__widget_pos")
+STATE_FILE = os.path.join(STATUS_DIR, "__widget_pos")
 LIMITS_FILE = os.path.join(STATUS_DIR, "ratelimits.json")
 
 # ---- tunables ---------------------------------------------------------------
@@ -49,7 +54,9 @@ AGE_TICK_MS = 1000
 DEAD_TTL = 6 * 3600
 STALE = 30 * 60
 NAME_MAX = 26
-WIDTH = 280
+BASE_WIDTH = 280
+MIN_WIDTH, MAX_WIDTH = 170, 640
+MIN_SCALE, MAX_SCALE = 0.6, 1.6
 
 BG = "#0f1012"
 FG = "#e8eaed"
@@ -62,11 +69,15 @@ DOT = {
     "finished": "#22c55e",
     "idle": "#22c55e",
 }
+LABEL = {
+    "running": "运行中",
+    "needs_confirmation": "待确认",
+    "finished": "已完成",
+    "idle": "空闲",
+}
+STATUS_FG = dict(DOT, idle=FG_MUTED)
 ORDER = {"needs_confirmation": 0, "running": 1, "finished": 2, "idle": 3}
-FONT_HEAD = ("Microsoft YaHei UI", 11, "bold")
-FONT_LIM = ("Microsoft YaHei UI", 11, "bold")
-FONT_TITLE = ("Microsoft YaHei UI", 12)
-FONT_SUB = ("Microsoft YaHei UI", 9)
+FAMILY = "Microsoft YaHei UI"
 
 
 def format_age(secs):
@@ -112,10 +123,10 @@ def short_model(m):
 
 def bar_color(remaining):
     if remaining < 12:
-        return "#ef4444"   # red
+        return "#ef4444"
     if remaining < 35:
-        return "#f59e0b"   # orange
-    return "#22c55e"       # green
+        return "#f59e0b"
+    return "#22c55e"
 
 
 def load_slots():
@@ -159,6 +170,13 @@ def load_limits():
 
 class Widget:
     def __init__(self):
+        st = self._load_state()
+        self.width = min(MAX_WIDTH, max(MIN_WIDTH, int(st.get("width", BASE_WIDTH))))
+        self.scale = min(MAX_SCALE, max(MIN_SCALE, float(st.get("scale", 1.0))))
+        self.collapsed = bool(st.get("collapsed", False))
+        self._pos = st.get("pos", "+80+80")
+        self._make_fonts()
+
         self.root = tk.Tk()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
@@ -172,58 +190,128 @@ class Widget:
         self.fingerprint = None
         self.slots = {}
         self.row_widgets = {}
-        self.reset_labels = []   # [(label, epoch)] countdowns updated each tick
+        self.reset_labels = []
 
-        # invisible spacer pins a minimum window width even with short content
-        tk.Frame(self.root, bg=BG, width=WIDTH, height=1).pack()
-        self.head = tk.Label(self.root, text="Claude Code", font=FONT_HEAD,
-                             fg=FG, bg=BG, anchor="w", padx=12, pady=5)
-        self.head.pack(fill="x")
+        # spacer pins the minimum window width (resize grip adjusts it)
+        self.spacer = tk.Frame(self.root, bg=BG, width=self.width, height=1)
+        self.spacer.pack()
+
+        self.header = tk.Frame(self.root, bg=BG)
+        self.header.pack(fill="x")
+        self.head_lbl = tk.Label(self.header, text="Claude Code", font=self.f_head,
+                                 fg=FG, bg=BG, anchor="w", padx=12, pady=5)
+        self.head_lbl.pack(side="left")
+        self.toggle_lbl = tk.Label(self.header, text="▸" if self.collapsed else "▾",
+                                   font=self.f_sub, fg=FG_MUTED, bg=BG, padx=10)
+        self.toggle_lbl.pack(side="right")
+
         self.body = tk.Frame(self.root, bg=BG)
-        self.body.pack(fill="both", expand=True)
+        self.grip = tk.Canvas(self.root, width=14, height=14, bg=BG,
+                              highlightthickness=0)
+        for cur in ("size_nw_se", "bottom_right_corner", "sizing"):
+            try:                       # cursor names differ per platform
+                self.grip.configure(cursor=cur)
+                break
+            except tk.TclError:
+                continue
+        for off in (3, 7, 11):
+            self.grip.create_line(off, 14, 14, off, fill=FG_MUTED)
+        if not self.collapsed:
+            self._show_body()
 
-        for w in (self.root, self.head):
+        for w in (self.root, self.header, self.head_lbl, self.toggle_lbl):
             self._bind_drag(w)
-        self.root.bind("<Button-3>", lambda e: self.root.destroy())
+            w.bind("<Button-3>", lambda e: self.root.destroy())
+        for w in (self.header, self.head_lbl, self.toggle_lbl):
+            w.bind("<Double-Button-1>", self._toggle_collapse)
+        self.grip.bind("<B1-Motion>", self._grip_drag)
+        self.grip.bind("<ButtonRelease-1>", self._grip_release)
+        self.root.bind_all("<Control-MouseWheel>", self._wheel)
 
-        self._restore_pos()
+        self.root.geometry(self._pos if self._pos.startswith("+") else "+80+80")
         self.data_poll()
         self.age_tick()
         self.root.mainloop()
 
-    # ---- dragging ----
-    def _bind_drag(self, w):
-        w.bind("<Button-1>", self._press)
-        w.bind("<B1-Motion>", self._move)
-        w.bind("<ButtonRelease-1>", lambda e: self._save_pos())
+    # ---- fonts / persisted state -------------------------------------------
+    def _make_fonts(self):
+        s = self.scale
+        self.f_head = (FAMILY, max(7, round(11 * s)), "bold")
+        self.f_lim = (FAMILY, max(7, round(11 * s)), "bold")
+        self.f_title = (FAMILY, max(7, round(12 * s)))
+        self.f_sub = (FAMILY, max(6, round(9 * s)))
 
-    def _press(self, e):
-        self._dx, self._dy = e.x, e.y
-
-    def _move(self, e):
-        self.root.geometry("+%d+%d" % (self.root.winfo_pointerx() - self._dx,
-                                       self.root.winfo_pointery() - self._dy))
-
-    def _restore_pos(self):
-        pos = "+80+80"
+    def _load_state(self):
         try:
-            with open(POS_FILE, "r") as f:
-                saved = f.read().strip()
-            if saved.startswith("+"):
-                pos = saved
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
         except Exception:
-            pass
-        self.root.geometry(pos)
-
-    def _save_pos(self):
+            return {}
+        if raw.startswith("+"):          # legacy "+x+y" format
+            return {"pos": raw}
         try:
-            with open(POS_FILE, "w") as f:
-                f.write("+%d+%d" % (self.root.winfo_x(), self.root.winfo_y()))
+            return json.loads(raw)
+        except Exception:
+            return {}
+
+    def _save_state(self):
+        st = {"pos": "+%d+%d" % (self.root.winfo_x(), self.root.winfo_y()),
+              "width": self.width, "scale": round(self.scale, 2),
+              "collapsed": self.collapsed}
+        try:
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(st, f)
         except OSError:
             pass
 
-    # ---- data poll ----
-    def data_poll(self):
+    # ---- move / collapse / resize / zoom ------------------------------------
+    def _bind_drag(self, w):
+        w.bind("<Button-1>", self._press)
+        w.bind("<B1-Motion>", self._move)
+        w.bind("<ButtonRelease-1>", lambda e: self._save_state())
+
+    def _press(self, e):
+        self._dx, self._dy = e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y()
+
+    def _move(self, e):
+        self.root.geometry("+%d+%d" % (e.x_root - self._dx, e.y_root - self._dy))
+
+    def _show_body(self):
+        self.grip.pack(side="bottom", anchor="e", padx=3, pady=2)
+        self.body.pack(fill="both", expand=True)
+
+    def _toggle_collapse(self, e=None):
+        self.collapsed = not self.collapsed
+        if self.collapsed:
+            self.body.pack_forget()
+            self.grip.pack_forget()
+        else:
+            self._show_body()
+        self.toggle_lbl.config(text="▸" if self.collapsed else "▾")
+        self._save_state()
+
+    def _grip_drag(self, e):
+        w = e.x_root - self.root.winfo_rootx()
+        self.width = min(MAX_WIDTH, max(MIN_WIDTH, w))
+        self.spacer.config(width=self.width)
+
+    def _grip_release(self, e=None):
+        self._save_state()
+        self.fingerprint = None      # bar widths depend on width -> rebuild
+        self._sync()
+
+    def _wheel(self, e):
+        step = 0.05 if getattr(e, "delta", 0) > 0 else -0.05
+        self.scale = min(MAX_SCALE, max(MIN_SCALE, round(self.scale + step, 2)))
+        self._make_fonts()
+        self.head_lbl.config(font=self.f_head)
+        self.toggle_lbl.config(font=self.f_sub)
+        self._save_state()
+        self.fingerprint = None
+        self._sync()
+
+    # ---- data ---------------------------------------------------------------
+    def _sync(self):
         slots = load_slots()
         lim = load_limits()
         self.slots = {s.get("sid", ""): s for s in slots}
@@ -232,32 +320,36 @@ class Widget:
         slot_fp = tuple((s.get("sid"), s.get("status"), s.get("project"),
                          s.get("named"), s.get("model"), s.get("tokens"))
                         for s in slots)
-        fp = (lim_fp, slot_fp)
+        fp = (lim_fp, slot_fp, self.width, self.scale)
         if fp != self.fingerprint:
             self.fingerprint = fp
             self._rebuild(slots, lim)
+
+    def data_poll(self):
+        self._sync()
         self.root.after(DATA_POLL_MS, self.data_poll)
 
+    # ---- rendering ----------------------------------------------------------
     def _rebuild(self, slots, lim):
         for child in self.body.winfo_children():
             child.destroy()
         self.row_widgets = {}
         self.reset_labels = []
-        self.head.config(text="Claude limits" if lim else "Claude Code")
+        self.head_lbl.config(text="Claude limits" if lim else "Claude Code")
 
         if lim:
             self._build_limits(lim)
-            tk.Frame(self.body, bg=BAR_TRACK, height=1).pack(fill="x", padx=12, pady=(4, 2))
+            tk.Frame(self.body, bg=BAR_TRACK, height=1).pack(fill="x", padx=12, pady=3)
 
         if not slots:
-            tk.Label(self.body, text="无活动会话", font=FONT_SUB,
+            tk.Label(self.body, text="无活动会话", font=self.f_sub,
                      fg=FG_MUTED, bg=BG, anchor="w", padx=12, pady=6).pack(anchor="w")
         for s in slots:
             self._build_row(s)
         self._refresh_dynamic()
 
     def _build_limits(self, lim):
-        bw = WIDTH - 24
+        bw = max(60, self.width - 24)
         for used_key, reset_key, title in (("five_used", "five_reset", "5h"),
                                            ("week_used", "week_reset", "weekly")):
             used = lim.get(used_key)
@@ -267,14 +359,14 @@ class Widget:
             head = tk.Frame(self.body, bg=BG)
             head.pack(fill="x", padx=12, pady=(4, 0))
             tk.Label(head, text="%s left %d%%" % (title, round(remaining)),
-                     font=FONT_LIM, fg=FG, bg=BG).pack(side="left")
+                     font=self.f_lim, fg=FG, bg=BG).pack(side="left")
             rl = tk.Label(head, text=format_reset(lim.get(reset_key)),
-                          font=FONT_SUB, fg=FG_MUTED, bg=BG)
+                          font=self.f_sub, fg=FG_MUTED, bg=BG)
             rl.pack(side="right")
             self.reset_labels.append((rl, lim.get(reset_key)))
 
             bar = tk.Canvas(self.body, height=6, width=bw, bg=BG, highlightthickness=0)
-            bar.pack(fill="x", padx=12, pady=(2, 2))
+            bar.pack(fill="x", padx=12, pady=2)
             bar.create_rectangle(0, 0, bw, 6, fill=BAR_TRACK, outline="")
             fillw = int(bw * remaining / 100.0)
             if fillw > 0:
@@ -287,30 +379,39 @@ class Widget:
         row.pack(fill="x", padx=10, pady=3)
         row.columnconfigure(1, weight=1)
 
-        dot = tk.Canvas(row, width=12, height=12, bg=BG, highlightthickness=0)
-        did = dot.create_oval(1, 1, 11, 11, fill=DOT.get(status, FG_MUTED), outline="")
+        dsize = max(8, round(12 * self.scale))
+        dot = tk.Canvas(row, width=dsize, height=dsize, bg=BG, highlightthickness=0)
+        did = dot.create_oval(1, 1, dsize - 1, dsize - 1,
+                              fill=DOT.get(status, FG_MUTED), outline="")
         dot.grid(row=0, column=0, rowspan=2, padx=(2, 9))
 
         proj = s.get("project") or "?"
         if len(proj) > NAME_MAX:
             proj = proj[:NAME_MAX - 1] + "…"
         title = proj if s.get("named") else "%s·%s" % (proj, (sid or "")[:6])
-        tl = tk.Label(row, text=title, font=FONT_TITLE, fg=FG, bg=BG, anchor="w")
+        tl = tk.Label(row, text=title, font=self.f_title, fg=FG, bg=BG, anchor="w")
         tl.grid(row=0, column=1, sticky="w")
 
+        sub = tk.Frame(row, bg=BG)
+        sub.grid(row=1, column=1, sticky="w")
+        st_lbl = tk.Label(sub, text=LABEL.get(status, status), font=self.f_sub,
+                          fg=STATUS_FG.get(status, FG_MUTED), bg=BG)
+        st_lbl.pack(side="left")
         parts = [short_model(s.get("model") or "")]
         if s.get("tokens"):
             parts.append(format_tokens(s.get("tokens")) + " tok")
-        sub = " · ".join(p for p in parts if p) or "—"
-        sl = tk.Label(row, text=sub, font=FONT_SUB, fg=FG_MUTED, bg=BG, anchor="w")
-        sl.grid(row=1, column=1, sticky="w")
+        meta = " · ".join(p for p in parts if p)
+        if meta:
+            tk.Label(sub, text=" · " + meta, font=self.f_sub,
+                     fg=FG_MUTED, bg=BG).pack(side="left")
 
-        al = tk.Label(row, text="", font=FONT_SUB, fg=FG_MUTED, bg=BG)
+        al = tk.Label(row, text="", font=self.f_sub, fg=FG_MUTED, bg=BG)
         al.grid(row=0, column=2, rowspan=2, sticky="e", padx=(6, 4))
 
-        self.row_widgets[sid] = {"dot": dot, "dot_id": did, "title": tl, "age": al}
+        self.row_widgets[sid] = {"dot": dot, "dot_id": did, "title": tl,
+                                 "status": st_lbl, "age": al}
 
-    # ---- age tick (in memory) ----
+    # ---- age tick (in memory) ------------------------------------------------
     def age_tick(self):
         self.blink_on = not self.blink_on
         self._refresh_dynamic()

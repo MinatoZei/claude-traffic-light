@@ -128,6 +128,27 @@ def detect_win_dir():
         return None
 
 
+def find_pythonw():
+    """Absolute Windows path to pythonw.exe (windowless). We can't rely on PATH:
+    the python.org installer often isn't added, and WSL sees a stale Windows PATH.
+    Falls back to the 'pyw' launcher (always in C:\\Windows)."""
+    import glob
+    for pat in ("/mnt/c/Users/*/AppData/Local/Programs/Python/Python*/pythonw.exe",
+                "/mnt/c/Program Files/Python*/pythonw.exe",
+                "/mnt/c/Program Files (x86)/Python*/pythonw.exe"):
+        hits = sorted(glob.glob(pat))
+        if hits:
+            try:
+                return subprocess.check_output(["wslpath", "-w", hits[-1]]).decode().strip()
+            except Exception:
+                pass
+    return "pyw"
+
+
+def _to_win(path):
+    return subprocess.check_output(["wslpath", "-w", path]).decode().strip()
+
+
 def deploy_widget():
     win_dir = detect_win_dir()
     if not win_dir:
@@ -141,14 +162,30 @@ def deploy_widget():
     distro = os.environ.get("WSL_DISTRO_NAME", "Ubuntu")
     wsl_status = os.path.expanduser("~/.claude/traffic_status")
     unc = r"\\wsl.localhost\%s%s" % (distro, wsl_status.replace("/", "\\"))
+    pyw = find_pythonw()
+    cmd_path = os.path.join(win_dir, "start_widget.cmd")
     cmd = ('@echo off\r\n'
            'set "CLAUDE_TRAFFIC_DIR=%s"\r\n'
-           'start "" pythonw "%%~dp0traffic_widget.py"\r\n') % unc
-    with open(os.path.join(win_dir, "start_widget.cmd"), "w", newline="") as f:
+           'start "" "%s" "%%~dp0traffic_widget.py"\r\n') % (unc, pyw)
+    with open(cmd_path, "w", newline="") as f:
         f.write(cmd)
-
     print("[widget] deployed ->", win_dir)
+    print("[widget] pythonw:", pyw)
     print("[widget] status dir (UNC):", unc)
+
+    # autostart on login (silent, no console flash) via a Startup-folder .vbs
+    startup = os.path.join(os.path.dirname(win_dir),
+                           "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup")
+    if os.path.isdir(startup):
+        try:
+            vbs = ('CreateObject("WScript.Shell").Run """%s""", 0, False\r\n'
+                   % _to_win(cmd_path))
+            with open(os.path.join(startup, "claude-traffic-widget.vbs"),
+                      "w", newline="") as f:
+                f.write(vbs)
+            print("[widget] autostart installed (runs on Windows login)")
+        except Exception as e:
+            print("[widget] autostart skipped:", e)
     print("[widget] double-click start_widget.cmd on Windows to launch")
 
 
