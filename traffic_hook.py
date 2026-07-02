@@ -106,10 +106,12 @@ def _scan_ancestry(sid):
       * Claude Code's own session file ~/.claude/sessions/<pid>.json — the
         claude process pid IS the filename — whose `name` field is the
         auto-generated session title Claude writes into the terminal
-        (e.g. 'fix-rename-sync-widget-terminal'). sessionId is verified so a
-        recycled pid can never attach a stranger's name.
-    Returns (tty, auto_name); either may be None."""
-    tty = auto = None
+        (e.g. 'fix-rename-sync-widget-terminal'), and whose pid the widget
+        keeps to live-check the file's `status` field ('busy' while a
+        background shell is still running after the turn ended). sessionId is
+        verified so a recycled pid can never attach a stranger's session.
+    Returns (tty, auto_name, claude_pid); each may be None."""
+    tty = auto = cpid = None
     pid = os.getpid()
     for _ in range(15):
         if tty is None:
@@ -121,16 +123,18 @@ def _scan_ancestry(sid):
                         break
                 except OSError:
                     pass
-        if auto is None:
+        if cpid is None:
             try:
                 with open(os.path.join(SESSIONS_DIR, "%d.json" % pid),
                           "r", encoding="utf-8") as f:
                     d = json.load(f)
-                if d.get("sessionId") == sid and (d.get("name") or "").strip():
-                    auto = d["name"].strip()
+                if d.get("sessionId") == sid:
+                    cpid = pid
+                    if (d.get("name") or "").strip():
+                        auto = d["name"].strip()
             except Exception:
                 pass
-        if tty and auto:
+        if tty and cpid:
             break
         try:
             with open("/proc/%d/stat" % pid, "rb") as f:
@@ -140,7 +144,7 @@ def _scan_ancestry(sid):
         if ppid <= 1:
             break
         pid = ppid
-    return tty, auto
+    return tty, auto, cpid
 
 
 def set_terminal_title(status, name, tty):
@@ -185,17 +189,19 @@ def write_slot(sid, status, project, named, model=None, tokens=None, agents=None
         tokens = prev.get("tokens")
     if agents is None and prev:
         agents = prev.get("agents", 0)
-    tty, auto = _scan_ancestry(sid)
-    if not tty or not auto:          # e.g. no pts / name not generated yet
+    tty, auto, cpid = _scan_ancestry(sid)
+    if not tty or not auto or not cpid:   # e.g. no pts / name not generated yet
         if prev is None:
             prev = read_slot(sid)
         tty = tty or (prev or {}).get("tty")
         auto = auto or (prev or {}).get("auto")
+        cpid = cpid or (prev or {}).get("cpid")
     data = {"status": status, "ts": int(time.time()),
             "project": project or "?", "named": bool(named), "sid": sid,
             "model": model, "tokens": tokens, "agents": agents or 0,
             "tty": tty,              # lets the widget push a title immediately
-            "auto": auto}            # Claude's own auto-generated session name
+            "auto": auto,            # Claude's own auto-generated session name
+            "cpid": cpid}            # claude pid -> sessions/<pid>.json 'busy'
     tmp = _slot(sid) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)

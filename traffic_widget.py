@@ -51,6 +51,8 @@ else:
 
 STATE_FILE = os.path.join(STATUS_DIR, "__widget_pos")
 LIMITS_FILE = os.path.join(STATUS_DIR, "ratelimits.json")
+# Claude Code's own per-process session files live next to traffic_status
+SESSIONS_DIR = os.path.join(os.path.dirname(STATUS_DIR.rstrip("\\/")), "sessions")
 NAMES_FILE = os.path.join(STATUS_DIR, "__names")   # {sid: alias} — per SESSION,
 # not per project: several sessions often share one folder, and a rename must
 # never leak onto other/new sessions started from the same directory.
@@ -143,6 +145,22 @@ def bar_color(remaining):
     return "#22c55e"
 
 
+def claude_busy(s):
+    """Claude Code's own live status for this session: 'busy' also covers a
+    background shell still running AFTER the turn ended — something no hook
+    event reports. sessionId is verified against the slot (pid reuse)."""
+    pid = s.get("cpid")
+    if not pid:
+        return False
+    try:
+        with open(os.path.join(SESSIONS_DIR, "%s.json" % pid),
+                  "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d.get("sessionId") == s.get("sid") and d.get("status") == "busy"
+    except Exception:
+        return False
+
+
 def load_slots():
     rows, now = [], time.time()
     if not os.path.isdir(STATUS_DIR):
@@ -166,6 +184,11 @@ def load_slots():
             except OSError:
                 pass
             continue
+        # turn ended (finished/idle) but Claude still reports busy = a
+        # background shell is running -> the session is NOT done. Upgrade to
+        # running with a bg marker; never touches needs_confirmation.
+        if d.get("status") in ("finished", "idle") and claude_busy(d):
+            d["status"], d["bg"] = "running", True
         rows.append(d)
     rows.sort(key=lambda d: (ORDER.get(d.get("status"), 9), -d.get("ts", 0)))
     return rows
@@ -445,9 +468,9 @@ class Widget:
         self.slots = {s.get("sid", ""): s for s in slots}
         lim_fp = ((round(lim.get("five_used") or -1),
                    round(lim.get("week_used") or -1)) if lim else None)
-        slot_fp = tuple((s.get("sid"), s.get("status"), s.get("project"),
-                         s.get("named"), s.get("auto"), s.get("model"),
-                         s.get("tokens"), s.get("agents"))
+        slot_fp = tuple((s.get("sid"), s.get("status"), s.get("bg"),
+                         s.get("project"), s.get("named"), s.get("auto"),
+                         s.get("model"), s.get("tokens"), s.get("agents"))
                         for s in slots)
         fp = (lim_fp, slot_fp, self.width, self.scale,
               tuple(sorted(self.names.items())))
@@ -546,6 +569,8 @@ class Widget:
         agents = s.get("agents") or 0
         if status == "running" and agents > 0:
             st_text = "派%d个子代理中" % agents
+        elif s.get("bg"):
+            st_text = "后台任务中"
         else:
             st_text = LABEL.get(status, status)
         st_lbl = tk.Label(sub, text=st_text, font=self.f_sub,
@@ -785,7 +810,9 @@ class Widget:
             status = s.get("status")
             age = now - s.get("ts", now)
             w["age"].config(text=format_age(age))
-            stale = (status == "running" and age > STALE)
+            # bg rows are re-verified live against Claude's session file every
+            # poll, so a long background shell must not grey out as stale
+            stale = (status == "running" and age > STALE and not s.get("bg"))
             w["title"].config(fg=FG_STALE if stale else FG)
             # finished / needs_confirmation blink until clicked (acknowledged)
             if self._needs_attention(s) and not self.blink_on:
