@@ -16,9 +16,11 @@ Layout (Codex-style panel):
 Interactions:
   * drag anywhere on the header to move (position remembered)
   * double-click the header  -> collapse to a slim title bar / expand again
-  * drag the bottom-right grip -> resize width freely
-  * Ctrl + mouse wheel       -> scale the whole widget smaller / bigger
-  * right-click              -> quit
+  * drag the right edge      -> resize width
+  * drag the bottom edge / bottom-right corner -> proportional zoom
+  * Ctrl + mouse wheel       -> proportional zoom too
+  * right-click              -> context menu
+  Titles are never truncated — the window widens to fit. Height fits the rows.
   All of pos / width / scale / collapsed are persisted.
 
 Data:
@@ -58,7 +60,6 @@ DATA_POLL_MS = 2000
 AGE_TICK_MS = 1000
 DEAD_TTL = 6 * 3600
 STALE = 30 * 60
-NAME_MAX = 26
 BASE_WIDTH = 280
 MIN_WIDTH, MAX_WIDTH = 170, 640
 MIN_SCALE, MAX_SCALE = 0.6, 1.6
@@ -220,7 +221,8 @@ class Widget:
         self.acked = ({k: tuple(v) for k, v in acked_raw.items()}
                       if isinstance(acked_raw, dict) else {})
 
-        # spacer pins the minimum window width (resize grip adjusts it)
+        # spacer pins the minimum window width (right-edge drag adjusts it;
+        # long titles widen the window beyond it automatically)
         self.spacer = tk.Frame(self.root, bg=BG, width=self.width, height=1)
         self.spacer.pack()
 
@@ -253,16 +255,28 @@ class Widget:
         self.refresh_lbl.bind("<Button-1>", self._force_refresh)
 
         self.body = tk.Frame(self.root, bg=BG)
-        self.grip = tk.Canvas(self.root, width=14, height=14, bg=BG,
-                              highlightthickness=0)
-        for cur in ("size_nw_se", "bottom_right_corner", "sizing"):
-            try:                       # cursor names differ per platform
-                self.grip.configure(cursor=cur)
-                break
-            except tk.TclError:
-                continue
-        for off in (3, 7, 11):
-            self.grip.create_line(off, 14, 14, off, fill=FG_MUTED)
+        # resize affordances (replace the old useless corner grip):
+        #   right edge strip            -> drag = width
+        #   bottom strip (whole, incl. corner) -> drag = proportional zoom
+        self.edge_r = tk.Frame(self.root, bg=BG, width=6)
+        self._set_cursor(self.edge_r, "size_we", "sb_h_double_arrow", "right_side")
+        self.edge_b = tk.Frame(self.root, bg=BG, height=8)
+        self._set_cursor(self.edge_b, "size_ns", "sb_v_double_arrow", "bottom_side")
+        corner = tk.Canvas(self.edge_b, width=16, height=8, bg=BG,
+                           highlightthickness=0)
+        for off in (6, 11):                    # subtle corner ticks
+            corner.create_line(off, 8, 16, off - 8, fill=FG_MUTED)
+        corner.pack(side="right")
+        self._set_cursor(corner, "size_nw_se", "bottom_right_corner", "sizing")
+        for w in (self.edge_r, self.edge_b, corner):
+            w.bind("<Button-1>", self._edge_press)
+            w.bind("<ButtonRelease-1>", self._resize_release)
+        self.edge_r.bind("<B1-Motion>", self._edge_w_drag)
+        self.edge_b.bind("<B1-Motion>", self._zoom_drag)
+        corner.bind("<B1-Motion>", self._zoom_drag)
+        for w in (self.edge_r, self.edge_b):   # hover hint on the hot zones
+            w.bind("<Enter>", lambda e, w_=w: w_.config(bg="#22252b"))
+            w.bind("<Leave>", lambda e, w_=w: w_.config(bg=BG))
         if not self.collapsed:
             self._show_body()
 
@@ -274,8 +288,6 @@ class Widget:
         for w in (self.header, self.head_lbl, self.sum_lbl):
             w.bind("<Double-Button-1>", self._toggle_collapse)
         self.toggle_lbl.bind("<Button-1>", self._toggle_collapse)  # single click
-        self.grip.bind("<B1-Motion>", self._grip_drag)
-        self.grip.bind("<ButtonRelease-1>", self._grip_release)
         self.root.bind_all("<Control-MouseWheel>", self._wheel)
 
         self.root.geometry(self._pos if self._pos.startswith("+") else "+80+80")
@@ -329,29 +341,68 @@ class Widget:
     def _move(self, e):
         self.root.geometry("+%d+%d" % (e.x_root - self._dx, e.y_root - self._dy))
 
+    @staticmethod
+    def _set_cursor(w, *names):
+        for cur in names:            # cursor names differ per platform
+            try:
+                w.configure(cursor=cur)
+                return
+            except tk.TclError:
+                continue
+
     def _show_body(self):
-        self.grip.pack(side="bottom", anchor="e", padx=3, pady=2)
+        self.edge_b.pack(side="bottom", fill="x")
+        self.edge_r.pack(side="right", fill="y")
         self.body.pack(fill="both", expand=True)
 
     def _toggle_collapse(self, e=None):
         self.collapsed = not self.collapsed
         if self.collapsed:
             self.body.pack_forget()
-            self.grip.pack_forget()
+            self.edge_r.pack_forget()
+            self.edge_b.pack_forget()
         else:
             self._show_body()
         self.toggle_lbl.config(text="▶" if self.collapsed else "▼")
         self._update_summary()
         self._save_state()
 
-    def _grip_drag(self, e):
-        w = e.x_root - self.root.winfo_rootx()
+    # ---- edge resizing: right edge = width, bottom/corner = zoom -------------
+    def _edge_press(self, e):
+        self._rz = {"x": e.x_root, "y": e.y_root, "w": self.width,
+                    "s": self.scale, "h": max(120, self.root.winfo_height()),
+                    "applied": self.scale}
+
+    def _edge_w_drag(self, e):
+        w = self._rz["w"] + (e.x_root - self._rz["x"])
         self.width = min(MAX_WIDTH, max(MIN_WIDTH, w))
         self.spacer.config(width=self.width)
 
-    def _grip_release(self, e=None):
+    def _zoom_drag(self, e):
+        # dragging the bottom edge down/up zooms the whole widget in/out,
+        # proportionally to how far you dragged relative to the window height
+        dy = e.y_root - self._rz["y"]
+        s = self._rz["s"] * (1 + dy / float(self._rz["h"]))
+        s = min(MAX_SCALE, max(MIN_SCALE, round(s, 2)))
+        if abs(s - self._rz["applied"]) < 0.05:
+            return                   # throttle full rebuilds while dragging
+        self._rz["applied"] = s
+        self._apply_scale(s)
+
+    def _resize_release(self, e=None):
         self._save_state()
         self.fingerprint = None      # bar widths depend on width -> rebuild
+        self._sync()
+
+    def _apply_scale(self, s):
+        self.scale = s
+        self._make_fonts()
+        for w, f in ((self.head_lbl, self.f_head),
+                     (self.toggle_lbl, self.f_toggle),
+                     (self.close_lbl, self.f_toggle),
+                     (self.refresh_lbl, self.f_toggle)):
+            w.config(font=f)
+        self.fingerprint = None
         self._sync()
 
     def _context_menu(self, e):
@@ -382,15 +433,9 @@ class Widget:
 
     def _wheel(self, e):
         step = 0.05 if getattr(e, "delta", 0) > 0 else -0.05
-        self.scale = min(MAX_SCALE, max(MIN_SCALE, round(self.scale + step, 2)))
-        self._make_fonts()
-        self.head_lbl.config(font=self.f_head)
-        self.toggle_lbl.config(font=self.f_toggle)
-        self.close_lbl.config(font=self.f_toggle)
-        self.refresh_lbl.config(font=self.f_toggle)
+        self._apply_scale(min(MAX_SCALE, max(MIN_SCALE,
+                                             round(self.scale + step, 2))))
         self._save_state()
-        self.fingerprint = None
-        self._sync()
 
     # ---- data ---------------------------------------------------------------
     def _sync(self):
@@ -401,8 +446,8 @@ class Widget:
         lim_fp = ((round(lim.get("five_used") or -1),
                    round(lim.get("week_used") or -1)) if lim else None)
         slot_fp = tuple((s.get("sid"), s.get("status"), s.get("project"),
-                         s.get("named"), s.get("model"), s.get("tokens"),
-                         s.get("agents"))
+                         s.get("named"), s.get("auto"), s.get("model"),
+                         s.get("tokens"), s.get("agents"))
                         for s in slots)
         fp = (lim_fp, slot_fp, self.width, self.scale,
               tuple(sorted(self.names.items())))
@@ -473,11 +518,12 @@ class Widget:
         dot.bind("<Button-1>", lambda e, s_=sid: self._ack(s_))
 
         proj = s.get("project") or "?"
-        alias = self.names.get(sid)            # per-session alias wins
-        shown = alias or proj
-        if len(shown) > NAME_MAX:
-            shown = shown[:NAME_MAX - 1] + "…"
-        if alias or s.get("named"):            # alias is unique already
+        alias = self.names.get(sid)            # user rename (per session)
+        auto = (s.get("auto") or "").strip()   # Claude's own session name
+        # precedence: ✎ alias > CCTL_NAME/.cctl-name > Claude auto > folder;
+        # never truncated — the window widens to fit the longest title
+        shown = alias or (proj if s.get("named") else (auto or proj))
+        if alias or s.get("named") or auto:    # already session-unique
             title = shown
         else:
             title = "%s·%s" % (shown, (sid or "")[:6])
@@ -557,11 +603,12 @@ class Widget:
         elsewhere."""
         if sys.platform != "win32":
             return
-        # the tab title may carry the per-session alias (after a rename) or the
-        # raw folder name — try both
+        # the tab title may carry the per-session alias (after a rename),
+        # Claude's auto session name, or the raw folder name — try all three
         alias = (self.names.get(s.get("sid", "")) or "").strip()
+        auto = (s.get("auto") or "").strip()
         proj = (s.get("project") or "").strip()
-        needles = [n.lower() for n in (alias, proj) if n and n != "?"]
+        needles = [n.lower() for n in (alias, auto, proj) if n and n != "?"]
         if not needles:
             return
         try:
@@ -681,8 +728,13 @@ class Widget:
                 else:
                     self.names.pop(sid, None)   # empty = back to folder name
                 self._save_names()
-                # sync the terminal tab title immediately (revert on clear)
-                self._push_title(s, v or s.get("project") or "")
+                # sync the terminal tab title immediately; clearing reverts to
+                # what the hook would write (auto name / folder name)
+                if not v and not s.get("named"):
+                    fallback = (s.get("auto") or "").strip() or s.get("project")
+                else:
+                    fallback = s.get("project")
+                self._push_title(s, v or fallback or "")
                 self.fingerprint = None
                 self._sync()
             top.destroy()

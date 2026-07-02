@@ -96,27 +96,51 @@ STATUS_MARK = {"running": "🔵", "needs_confirmation": "🟡",
                "finished": "🟢", "idle": "⚪"}
 
 
-def _find_tty():
-    """Controlling pts of the session (walk ancestors — the hook's own fds are
-    pipes, but the claude process / its shell sit on a /dev/pts/*)."""
+SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
+
+
+def _scan_ancestry(sid):
+    """One /proc walk up the ancestor chain grabs two things:
+      * the controlling pts (the hook's own fds are pipes, but the claude
+        process / its shell sit on a /dev/pts/*) — for tab titles;
+      * Claude Code's own session file ~/.claude/sessions/<pid>.json — the
+        claude process pid IS the filename — whose `name` field is the
+        auto-generated session title Claude writes into the terminal
+        (e.g. 'fix-rename-sync-widget-terminal'). sessionId is verified so a
+        recycled pid can never attach a stranger's name.
+    Returns (tty, auto_name); either may be None."""
+    tty = auto = None
     pid = os.getpid()
     for _ in range(15):
-        for fd in (0, 1, 2):
+        if tty is None:
+            for fd in (0, 1, 2):
+                try:
+                    p = os.readlink("/proc/%d/fd/%d" % (pid, fd))
+                    if p.startswith("/dev/pts/"):
+                        tty = p
+                        break
+                except OSError:
+                    pass
+        if auto is None:
             try:
-                p = os.readlink("/proc/%d/fd/%d" % (pid, fd))
-                if p.startswith("/dev/pts/"):
-                    return p
-            except OSError:
+                with open(os.path.join(SESSIONS_DIR, "%d.json" % pid),
+                          "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if d.get("sessionId") == sid and (d.get("name") or "").strip():
+                    auto = d["name"].strip()
+            except Exception:
                 pass
+        if tty and auto:
+            break
         try:
             with open("/proc/%d/stat" % pid, "rb") as f:
                 ppid = int(f.read().rsplit(b")", 1)[1].split()[1])
         except Exception:
-            return None
+            break
         if ppid <= 1:
-            return None
+            break
         pid = ppid
-    return None
+    return tty, auto
 
 
 def set_terminal_title(status, name, tty):
@@ -161,23 +185,28 @@ def write_slot(sid, status, project, named, model=None, tokens=None, agents=None
         tokens = prev.get("tokens")
     if agents is None and prev:
         agents = prev.get("agents", 0)
-    tty = _find_tty()
-    if not tty:                      # e.g. no controlling pts on this event
+    tty, auto = _scan_ancestry(sid)
+    if not tty or not auto:          # e.g. no pts / name not generated yet
         if prev is None:
             prev = read_slot(sid)
-        tty = (prev or {}).get("tty")
+        tty = tty or (prev or {}).get("tty")
+        auto = auto or (prev or {}).get("auto")
     data = {"status": status, "ts": int(time.time()),
             "project": project or "?", "named": bool(named), "sid": sid,
             "model": model, "tokens": tokens, "agents": agents or 0,
-            "tty": tty}              # lets the widget push a title immediately
+            "tty": tty,              # lets the widget push a title immediately
+            "auto": auto}            # Claude's own auto-generated session name
     tmp = _slot(sid) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
     os.replace(tmp, _slot(sid))  # atomic
-    # widget-side per-session alias (if any) beats CCTL_NAME / .cctl-name /
-    # folder name for the tab title; the slot's project field stays the real
-    # folder name (stickiness + jump matching depend on it).
-    set_terminal_title(status, load_alias(sid) or data["project"], tty)
+    # tab-title name, same precedence the widget displays: user alias >
+    # explicit CCTL_NAME/.cctl-name > Claude's auto name > folder name. The
+    # slot's project field stays the real folder name regardless (stickiness
+    # + jump matching depend on it).
+    name = load_alias(sid) or \
+        (data["project"] if data["named"] else (auto or data["project"]))
+    set_terminal_title(status, name, tty)
 
 
 def remove_slot(sid):

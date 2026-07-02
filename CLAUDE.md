@@ -114,3 +114,4 @@ python3 <本仓库路径>/uninstall.py   # 按 marker 移除 hooks + 还原 stat
 9. 限额数据拿不到就隐藏,**绝不显示估算的假进度条**。
 10. tkinter 光标名/字体等平台差异要 try/except 回退(如 `size_nw_se` 是 Windows 专属)。
 11. `__names` 别名表按 **sid** 键存(会话级),绝不能按 project 目录名键存——多个会话常共用同一目录,项目级别名会让一个改名污染同目录所有新会话。alias 只影响"显示 + tab 标题";slot 的 `project` 字段必须始终是真实目录名(stickiness 回填、跳转匹配都依赖它)。
+12. slot 的 `auto` 字段(Claude 自动会话名)来自 `~/.claude/sessions/<claude进程pid>.json` 的 `name`,通过 /proc 祖先链定位(hook 是 claude 的子进程,祖先 pid 即文件名)。**必须校验文件里 `sessionId == sid`** 再采用(pid 会被复用,不校验会串到别人会话的名字);读不到就 sticky 用上一次的值,绝不为此报错。显示优先级固定:✎ alias > CCTL_NAME/.cctl-name > auto > 目录名·短id。
