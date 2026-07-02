@@ -234,6 +234,11 @@ class Widget:
                                    font=self.f_toggle, fg="#c3c8cf", bg=BG,
                                    padx=6, pady=2, cursor="hand2")
         self.toggle_lbl.pack(side="right")
+        self.refresh_lbl = tk.Label(self.header, text="⟳", font=self.f_toggle,
+                                    fg=FG_MUTED, bg=BG, padx=6, pady=2,
+                                    cursor="hand2")
+        self.refresh_lbl.pack(side="right")
+        self.refresh_lbl.bind("<Button-1>", self._force_refresh)
 
         self.body = tk.Frame(self.root, bg=BG)
         self.grip = tk.Canvas(self.root, width=14, height=14, bg=BG,
@@ -337,6 +342,18 @@ class Widget:
         self.fingerprint = None      # bar widths depend on width -> rebuild
         self._sync()
 
+    def _force_refresh(self, e=None):
+        """⟳: drop the flag so the next statusLine render refreshes the limits
+        snapshot (normally throttled to 10 min), and re-read everything now."""
+        try:
+            open(os.path.join(STATUS_DIR, "__limits_refresh"), "w").close()
+        except OSError:
+            pass
+        self.fingerprint = None
+        self._sync()
+        self.refresh_lbl.config(fg="#3b82f6")           # click feedback
+        self.root.after(600, lambda: self.refresh_lbl.config(fg=FG_MUTED))
+
     def _wheel(self, e):
         step = 0.05 if getattr(e, "delta", 0) > 0 else -0.05
         self.scale = min(MAX_SCALE, max(MIN_SCALE, round(self.scale + step, 2)))
@@ -344,6 +361,7 @@ class Widget:
         self.head_lbl.config(font=self.f_head)
         self.toggle_lbl.config(font=self.f_toggle)
         self.close_lbl.config(font=self.f_toggle)
+        self.refresh_lbl.config(font=self.f_toggle)
         self._save_state()
         self.fingerprint = None
         self._sync()
