@@ -174,8 +174,16 @@ def main():
         return
 
     if name == "Stop":
-        # turn is over -> whatever agents were counted are done
-        write_slot(sid, "finished", project, named, model, tokens, agents=0)
+        prev = read_slot(sid) or {}
+        n = prev.get("agents", 0) or 0
+        if n > 0:
+            # turn ended but background subagents are still working
+            # ("waiting for N background agents") -> NOT finished yet; the
+            # main loop resumes when they return and a later Stop lands here
+            # with n == 0.
+            write_slot(sid, "running", project, named, model, tokens, agents=n)
+        else:
+            write_slot(sid, "finished", project, named, model, tokens, agents=0)
         return
 
     # UserPromptSubmit -> running (status comes from the hint)
