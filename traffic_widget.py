@@ -191,6 +191,11 @@ class Widget:
         self.slots = {}
         self.row_widgets = {}
         self.reset_labels = []
+        # sid -> (status, ts) the user acknowledged by clicking the dot;
+        # any new event changes (status, ts) and re-arms the blink
+        acked_raw = st.get("acked")
+        self.acked = ({k: tuple(v) for k, v in acked_raw.items()}
+                      if isinstance(acked_raw, dict) else {})
 
         # spacer pins the minimum window width (resize grip adjusts it)
         self.spacer = tk.Frame(self.root, bg=BG, width=self.width, height=1)
@@ -201,8 +206,13 @@ class Widget:
         self.head_lbl = tk.Label(self.header, text="Claude Code", font=self.f_head,
                                  fg=FG, bg=BG, anchor="w", padx=12, pady=5)
         self.head_lbl.pack(side="left")
-        self.toggle_lbl = tk.Label(self.header, text="▸" if self.collapsed else "▾",
-                                   font=self.f_sub, fg=FG_MUTED, bg=BG, padx=10)
+        # collapsed-mode summary: "3会话 · 2运行 · 1空闲"
+        self.sum_lbl = tk.Label(self.header, text="", font=self.f_sub,
+                                fg=FG_MUTED, bg=BG, anchor="w")
+        self.sum_lbl.pack(side="left")
+        self.toggle_lbl = tk.Label(self.header, text="▶" if self.collapsed else "▼",
+                                   font=self.f_toggle, fg="#c3c8cf", bg=BG,
+                                   padx=12, pady=2, cursor="hand2")
         self.toggle_lbl.pack(side="right")
 
         self.body = tk.Frame(self.root, bg=BG)
@@ -219,11 +229,14 @@ class Widget:
         if not self.collapsed:
             self._show_body()
 
-        for w in (self.root, self.header, self.head_lbl, self.toggle_lbl):
+        for w in (self.root, self.header, self.head_lbl, self.sum_lbl):
             self._bind_drag(w)
+        for w in (self.root, self.header, self.head_lbl, self.sum_lbl,
+                  self.toggle_lbl):
             w.bind("<Button-3>", lambda e: self.root.destroy())
-        for w in (self.header, self.head_lbl, self.toggle_lbl):
+        for w in (self.header, self.head_lbl, self.sum_lbl):
             w.bind("<Double-Button-1>", self._toggle_collapse)
+        self.toggle_lbl.bind("<Button-1>", self._toggle_collapse)  # single click
         self.grip.bind("<B1-Motion>", self._grip_drag)
         self.grip.bind("<ButtonRelease-1>", self._grip_release)
         self.root.bind_all("<Control-MouseWheel>", self._wheel)
@@ -240,6 +253,7 @@ class Widget:
         self.f_lim = (FAMILY, max(7, round(11 * s)), "bold")
         self.f_title = (FAMILY, max(7, round(12 * s)))
         self.f_sub = (FAMILY, max(6, round(9 * s)))
+        self.f_toggle = (FAMILY, max(9, round(13 * s)))
 
     def _load_state(self):
         try:
@@ -255,9 +269,11 @@ class Widget:
             return {}
 
     def _save_state(self):
+        acked = {sid: list(v) for sid, v in self.acked.items()
+                 if sid in self.slots}          # prune gone sessions
         st = {"pos": "+%d+%d" % (self.root.winfo_x(), self.root.winfo_y()),
               "width": self.width, "scale": round(self.scale, 2),
-              "collapsed": self.collapsed}
+              "collapsed": self.collapsed, "acked": acked}
         try:
             with open(STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump(st, f)
@@ -287,7 +303,8 @@ class Widget:
             self.grip.pack_forget()
         else:
             self._show_body()
-        self.toggle_lbl.config(text="▸" if self.collapsed else "▾")
+        self.toggle_lbl.config(text="▶" if self.collapsed else "▼")
+        self._update_summary()
         self._save_state()
 
     def _grip_drag(self, e):
@@ -305,7 +322,7 @@ class Widget:
         self.scale = min(MAX_SCALE, max(MIN_SCALE, round(self.scale + step, 2)))
         self._make_fonts()
         self.head_lbl.config(font=self.f_head)
-        self.toggle_lbl.config(font=self.f_sub)
+        self.toggle_lbl.config(font=self.f_toggle)
         self._save_state()
         self.fingerprint = None
         self._sync()
@@ -318,7 +335,8 @@ class Widget:
         lim_fp = ((round(lim.get("five_used") or -1),
                    round(lim.get("week_used") or -1)) if lim else None)
         slot_fp = tuple((s.get("sid"), s.get("status"), s.get("project"),
-                         s.get("named"), s.get("model"), s.get("tokens"))
+                         s.get("named"), s.get("model"), s.get("tokens"),
+                         s.get("agents"))
                         for s in slots)
         fp = (lim_fp, slot_fp, self.width, self.scale)
         if fp != self.fingerprint:
@@ -380,10 +398,12 @@ class Widget:
         row.columnconfigure(1, weight=1)
 
         dsize = max(8, round(12 * self.scale))
-        dot = tk.Canvas(row, width=dsize, height=dsize, bg=BG, highlightthickness=0)
+        dot = tk.Canvas(row, width=dsize, height=dsize, bg=BG, highlightthickness=0,
+                        cursor="hand2")
         did = dot.create_oval(1, 1, dsize - 1, dsize - 1,
                               fill=DOT.get(status, FG_MUTED), outline="")
         dot.grid(row=0, column=0, rowspan=2, padx=(2, 9))
+        dot.bind("<Button-1>", lambda e, s_=sid: self._ack(s_))
 
         proj = s.get("project") or "?"
         if len(proj) > NAME_MAX:
@@ -391,10 +411,16 @@ class Widget:
         title = proj if s.get("named") else "%s·%s" % (proj, (sid or "")[:6])
         tl = tk.Label(row, text=title, font=self.f_title, fg=FG, bg=BG, anchor="w")
         tl.grid(row=0, column=1, sticky="w")
+        tl.bind("<Button-1>", lambda e, s_=sid: self._ack(s_))
 
         sub = tk.Frame(row, bg=BG)
         sub.grid(row=1, column=1, sticky="w")
-        st_lbl = tk.Label(sub, text=LABEL.get(status, status), font=self.f_sub,
+        agents = s.get("agents") or 0
+        if status == "running" and agents > 0:
+            st_text = "派%d个子代理中" % agents
+        else:
+            st_text = LABEL.get(status, status)
+        st_lbl = tk.Label(sub, text=st_text, font=self.f_sub,
                           fg=STATUS_FG.get(status, FG_MUTED), bg=BG)
         st_lbl.pack(side="left")
         parts = [short_model(s.get("model") or "")]
@@ -411,14 +437,52 @@ class Widget:
         self.row_widgets[sid] = {"dot": dot, "dot_id": did, "title": tl,
                                  "status": st_lbl, "age": al}
 
+    # ---- acknowledge (click the blinking dot = "seen it") --------------------
+    def _ack(self, sid):
+        s = self.slots.get(sid)
+        if not s:
+            return
+        self.acked[sid] = (s.get("status"), s.get("ts"))
+        self._save_state()
+        self._refresh_dynamic()
+
+    def _needs_attention(self, s):
+        """finished / needs_confirmation that the user hasn't acknowledged."""
+        if s.get("status") not in ("finished", "needs_confirmation"):
+            return False
+        return self.acked.get(s.get("sid", "")) != (s.get("status"), s.get("ts"))
+
     # ---- age tick (in memory) ------------------------------------------------
     def age_tick(self):
         self.blink_on = not self.blink_on
         self._refresh_dynamic()
         self.root.after(AGE_TICK_MS, self.age_tick)
 
+    def _update_summary(self):
+        if not self.collapsed:
+            self.sum_lbl.config(text="")
+            return
+        slots = list(self.slots.values())
+        if not slots:
+            self.sum_lbl.config(text="无会话", fg=FG_MUTED)
+            return
+        counts = {}
+        for s in slots:
+            st = s.get("status") or "idle"
+            counts[st] = counts.get(st, 0) + 1
+        parts = ["%d会话" % len(slots)]
+        for st, word in (("needs_confirmation", "待确认"), ("running", "运行"),
+                         ("finished", "完成"), ("idle", "空闲")):
+            if counts.get(st):
+                parts.append("%d%s" % (counts[st], word))
+        fg = DOT["needs_confirmation"] if counts.get("needs_confirmation") else FG_MUTED
+        if any(self._needs_attention(s) for s in slots) and not self.blink_on:
+            fg = FG_STALE                     # soft blink while collapsed
+        self.sum_lbl.config(text=" · ".join(parts), fg=fg, font=self.f_sub)
+
     def _refresh_dynamic(self):
         now = time.time()
+        self._update_summary()
         for lbl, epoch in self.reset_labels:
             lbl.config(text=format_reset(epoch))
         for sid, w in self.row_widgets.items():
@@ -430,8 +494,9 @@ class Widget:
             w["age"].config(text=format_age(age))
             stale = (status == "running" and age > STALE)
             w["title"].config(fg=FG_STALE if stale else FG)
-            if status == "needs_confirmation":
-                color = DOT["needs_confirmation"] if self.blink_on else BG
+            # finished / needs_confirmation blink until clicked (acknowledged)
+            if self._needs_attention(s) and not self.blink_on:
+                color = BG
             else:
                 color = DOT.get(status, FG_MUTED)
             w["dot"].itemconfig(w["dot_id"], fill=color)

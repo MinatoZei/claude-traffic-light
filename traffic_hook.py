@@ -79,15 +79,20 @@ def parse_transcript(path):
     return model, total
 
 
-def write_slot(sid, status, project, named, model=None, tokens=None):
+def read_slot(sid):
+    try:
+        with open(_slot(sid), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def write_slot(sid, status, project, named, model=None, tokens=None, agents=None):
     os.makedirs(STATUS_DIR, exist_ok=True)
     prev = None
-    if (not project or project == "?") or model is None or tokens is None:
-        try:
-            with open(_slot(sid), "r", encoding="utf-8") as f:
-                prev = json.load(f)
-        except Exception:
-            prev = None
+    if (not project or project == "?") or model is None or tokens is None \
+            or agents is None:
+        prev = read_slot(sid)
     # a later event without fresh data must not wipe previously known values
     if (not project or project == "?") and prev and \
             prev.get("project") and prev["project"] != "?":
@@ -97,9 +102,11 @@ def write_slot(sid, status, project, named, model=None, tokens=None):
         model = prev.get("model")
     if tokens is None and prev:
         tokens = prev.get("tokens")
+    if agents is None and prev:
+        agents = prev.get("agents", 0)
     data = {"status": status, "ts": int(time.time()),
             "project": project or "?", "named": bool(named), "sid": sid,
-            "model": model, "tokens": tokens}
+            "model": model, "tokens": tokens, "agents": agents or 0}
     tmp = _slot(sid) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
@@ -156,7 +163,22 @@ def main():
         # auth_success / elicitation_complete / ... : ignore
         return
 
-    # UserPromptSubmit -> running, Stop -> finished (status comes from the hint)
+    if name in ("SubagentStart", "SubagentStop"):
+        prev = read_slot(sid) or {}
+        n = prev.get("agents", 0) or 0
+        if name == "SubagentStart":
+            n, status = n + 1, "running"       # dispatching = definitely working
+        else:
+            n, status = max(0, n - 1), prev.get("status") or "running"
+        write_slot(sid, status, project, named, agents=n)
+        return
+
+    if name == "Stop":
+        # turn is over -> whatever agents were counted are done
+        write_slot(sid, "finished", project, named, model, tokens, agents=0)
+        return
+
+    # UserPromptSubmit -> running (status comes from the hint)
     if hint:
         write_slot(sid, hint, project, named, model, tokens)
 

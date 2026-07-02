@@ -34,6 +34,8 @@ OUR = {
     "UserPromptSubmit": "running",
     "Notification": "needs_confirmation",
     "Stop": "finished",
+    "SubagentStart": "agent",    # hint unused; dispatched by event name
+    "SubagentStop": "agent",
     "SessionEnd": "end",
 }
 
