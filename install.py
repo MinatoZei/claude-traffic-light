@@ -122,7 +122,7 @@ def detect_win_dir():
     try:
         out = subprocess.check_output(["cmd.exe", "/c", "echo %USERPROFILE%"],
                                       stderr=subprocess.DEVNULL, timeout=10)
-        winhome = out.decode(errors="ignore").strip()          # C:\Users\minato
+        winhome = out.decode(errors="ignore").strip()          # e.g. C:\Users\you
         wsl = subprocess.check_output(["wslpath", "-u", winhome],
                                       timeout=10).decode().strip()
         return os.path.join(wsl, "claude-traffic-widget")

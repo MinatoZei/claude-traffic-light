@@ -1,38 +1,34 @@
-# 🚦 Claude Code 桌面会话面板(WSL → Windows 悬浮窗)
+# 🚦 Claude Traffic Light — Claude Code 桌面会话面板
 
-一个挂在 **Windows 桌面**上的无边框置顶悬浮小窗,列出你在 **WSL 里跑的每个 Claude Code 会话**当前是「运行中 / 已完成 / 待确认 / 空闲」,以及距上次活动多久 —— 多开几个项目时,余光一扫就知道哪个跑完了、哪个还在忙,不用挨个切窗口。
+> A frameless always-on-top desktop panel that shows every Claude Code session's live status (running / done / waiting), subagent count, model·tokens, and your real 5h & weekly rate-limit bars. Built for WSL2 → Windows.
+
+在 **Windows 桌面**挂一个无边框置顶小面板,一眼看到你在 **WSL 里跑的每个 Claude Code 会话**:谁在跑、谁跑完了、谁在等你确认、派了几个子代理、用的什么模型烧了多少 token,顶部还有**真实的 5h / 周限额进度条**。多开项目时不用再挨个切窗口看。
 
 ```
-Claude limits
-5h left 90%                     3h17m
-██████████████████░░
-weekly left 85%                 4d22h
-█████████████████░░░
-🔵 后端                          4s
-   opus-4-8 · 35M tok
-🟢 RuoYi-Vue3·a465cd            12s
-   sonnet-5 · 26M tok
-🟡 爬虫                          1m
-   haiku-4-5 · 1M tok
+Claude limits                      ⟳ ▼ ✕
+5h left 79%                        1h50m
+██████████████████████████░░░░░░
+weekly left 92%                    4d19h
+██████████████████████████████░░
+──────────────────────────────────────
+🔵 后端                              4s
+   派3个子代理中 · fable-5 · 48M tok
+🟢 RuoYi-Vue3·a465                  12s
+   已完成 · sonnet-5 · 26M tok
+🟡 爬虫                              1m
+   待确认 · haiku-4-5 · 1M tok
 ```
 
-状态点颜色:🔵 运行中 · 🟢 已完成/空闲 · 🟡 待确认(闪烁)。
+## 特性
 
----
-
-## 来源与署名 · Attribution
-
-**Forked from [weilizhe8-del/claude-code-traffic-light](https://github.com/weilizhe8-del/claude-code-traffic-light) (MIT).**
-This is a modified version — 不是原版。原项目是 Windows 上的**单个聚合红绿灯**(PowerShell hook + tkinter),本 fork 在其之上做了以下改造:
-
-- **hook 改用 Python 并读 stdin**:从 Claude Code 传入的 JSON 里取 `session_id` / `cwd`,支持在 WSL(Linux)里运行(原版是 PowerShell + 走进程树找 `claude.exe`)。
-- **单聚合灯 → 每会话一行列表**:每个会话独立一行(项目名 + 短 id + 状态 + 距上次活动)。
-- **数据通道**:每会话一个 JSON 文件;widget 跑在 Windows 侧、经 `\\wsl.localhost\...` UNC 读取,`-topmost` 才是真正的 `HWND_TOPMOST`(压得住原生 Windows 窗口)。
-- 只监控 Claude Code;新增位置记忆、僵尸会话清理、两级刷新(读盘 2s / 就地跳秒 1s)。
-
-原作者的多会话 slot 设计文档保留在 [`design_multi_window.md`](./design_multi_window.md)。`LICENSE` 保留原 MIT 全文及原作者版权声明。
-
----
+- **每会话一行**:项目名(可自定义)+ 状态 + 距上次活动,状态点 🔵运行中 / 🟢已完成·空闲 / 🟡待确认(闪烁)
+- **子代理感知**:派发 subagent 时显示"派N个子代理中";主回合结束但后台 agent 还在跑时**不会误报已完成**
+- **闪烁提醒 + 点击确认**:已完成/待确认的行会闪,点圆点或标题 = "我知道了"停闪;你直接继续对话也自动停闪
+- **真实限额条**(可选,Pro/Max):5h + weekly 剩余百分比与重置倒计时,数据来自 Anthropic 服务端下发,**绝不估算、拿不到就不显示**;快照 10 分钟节流,⟳ 按钮手动刷新
+- **模型 · token**:从会话 transcript 自动累加(含 cache,与官方 `/usage` 口径一致的累计值)
+- **零网络请求**:全部数据来自本地文件与 Claude Code 自带的 hook/statusLine 通道
+- **窗口体验**:铁置顶(真 `HWND_TOPMOST`)、拖动、▼ 收起成一条(显示 N会话·N运行·N空闲 汇总)、右下角拖拽改宽、Ctrl+滚轮整体缩放、✕ 关闭;位置/宽度/缩放/收起/已读全部记忆
+- **零第三方依赖**:两端都是 Python 标准库(tkinter)+ bash + jq
 
 ## 架构
 
@@ -42,76 +38,100 @@ Claude Code 会话
    │  生命周期 hook(stdin JSON)
    ▼
 traffic_hook.py ──写──► ~/.claude/traffic_status/<session_id>.json
-                        {status, ts, project, sid}
+statusline-ratelimit.sh ──写──► ratelimits.json(限额,10min 节流)
                                  │  \\wsl.localhost\<distro>\...\traffic_status\
                                  ▼
-                        traffic_widget.py (pythonw + tkinter,置顶悬浮)
+                        traffic_widget.py(pythonw + tkinter,置顶悬浮)
 ```
 
-两端只靠文件解耦:hook 只管「写状态」,widget 只管「读+显示」。不开端口、不常驻服务,任一端崩了不影响另一端。
+两端只靠文件解耦:hook 只管写状态,widget 只管读+显示。不开端口、无常驻服务、任一端崩了不影响另一端。
 
-## 事件 → 状态映射
+## 系统要求
 
-| Claude Code hook | 状态 | 说明 |
-|---|---|---|
-| `SessionStart` | 空闲(idle) | `source=="compact"`(上下文压缩)时不重置 |
-| `UserPromptSubmit` | 运行中(running) | 你提交了 prompt,开始跑 |
-| `Notification` | 待确认 / 空闲 | 按 `notification_type` 分流:`permission_prompt`→待确认;`idle_prompt`→空闲 |
-| `Stop` | 已完成(finished) | 本轮答完,在等你 |
-| `SessionEnd` | 移除 | 删掉该会话的行 |
-
-> 若你开了 `defaultMode: auto` / `skipAutoPermissionPrompt`,权限提示极少触发,「待确认」基本不亮属正常 —— 实际常用的是 **运行中 / 已完成 / 空闲** 三态,正好回答「跑完了没」。
+- Windows 10/11 + WSL2(发行版任意,默认按 Ubuntu 生成路径)
+- WSL 内:Python 3、jq(限额条需要,`apt install jq`)
+- Windows 侧:Python 3(python.org 官方安装包,自带 tkinter;**不要用 Microsoft Store 版**)
 
 ## 安装
 
-**前置**:Windows 上装一个 Python(勾选 Add to PATH),含 tkinter(官方安装包默认带)。WSL 里有 `python3`。
+> 🤖 **让 AI 装**:直接把本仓库丢给 Claude Code 说"照 CLAUDE.md 装一下",[CLAUDE.md](./CLAUDE.md) 里有给 AI 看的完整安装/验证/排障手册。
+
+手动三步:
 
 ```bash
-# 在 WSL 里
+# 1. WSL 里 clone
+git clone https://github.com/MinatoZei/claude-traffic-light /opt/claude-traffic-light
+
+# 2. 安装(合并 hook 进 ~/.claude/settings.json + 部署 widget 到 Windows)
 python3 /opt/claude-traffic-light/install.py
-# 若自动探测 Windows 主目录失败,手动指定:
-# python3 install.py --win-dir /mnt/c/Users/<你>/claude-traffic-widget
-```
-
-install 会:① 把 hook **合并**进 `~/.claude/settings.json`(append,不动你已有的 hook,先自动备份);② 把 `traffic_widget.py` + `start_widget.cmd` 拷到 Windows 侧 `C:\Users\<你>\claude-traffic-widget\`,并在启动脚本里写好本机的 UNC 状态目录。
-
-**装完重启你的 Claude Code 会话**让 hook 生效,然后在 Windows 上**双击 `start_widget.cmd`** 启动悬浮窗(`pythonw` 无黑框)。
-
-### 给会话起名字
-
-默认那行显示 `文件夹名·会话短id`(如 `opt·2a6472`)。想要看得懂的名字:
-
-- **给项目目录放个 `.cctl-name` 文件**(内容就是名字)→ 该目录所有会话都用这名字,已在跑的下次动作即生效。
-- 或**启动时带环境变量**:`CCTL_NAME=后端 claude` → 这个窗口叫「后端」。
-
-优先级 `CCTL_NAME` > `.cctl-name` > 文件夹名。**一旦有自定义名,那串 hex 短 id 自动隐藏。**
-
-### 模型 · token(自动)
-
-每行副标题的 `模型 · N tok` 在会话答完(`Stop`)时从该会话 transcript 累加得出(含 cache token,与官方 `/usage` 口径一致的累计值)。无需配置。
-
-### 5h / weekly 限额条(可选,需订阅版)
-
-顶部两条额度进度条是**真实数据**,但只有 Claude.ai **Pro/Max 订阅**才由服务端下发(hook 拿不到,只能从 statusLine 抓)。开启:
-
-```bash
+#    要限额条(Pro/Max 订阅)就加 --with-limits:
 python3 /opt/claude-traffic-light/install.py --with-limits
 ```
-它会把你现有的 statusLine 包一层(透传,不影响原状态栏),把 `rate_limits` 抽进 `~/.claude/traffic_status/ratelimits.json`。**下个会话产生第一次响应后**该文件才出现,widget 随即显示两条条;**拿不到就自动不显示(绝不显示假条)**。验证:`cat ~/.claude/traffic_status/ratelimits.json`,`five_used`/`week_used` 非 null 即成。
 
-## 使用
+3. Windows 装好 Python 后,双击 `C:\Users\<你>\claude-traffic-widget\start_widget.cmd` 启动(无黑框,且已自动注册开机自启)。**重启你的 Claude Code 会话**让 hook 生效。
 
-- 左键拖动挪位置(记忆,下次开在原地);右键关闭。
-- 想开机自启:把 `start_widget.cmd` 的快捷方式丢进 `shell:startup`。
-- 可调项都在 `traffic_widget.py` 顶部常量(刷新间隔、颜色、TTL、宽度、名字长度上限)。
+install 是幂等的:反复运行不会叠加;它**只 append 不覆盖**你 settings.json 里已有的 hooks/statusLine(先自动备份成 `settings.json.bak-<时间戳>`)。
+
+## 操作手势
+
+| 操作 | 效果 |
+|---|---|
+| 左键拖(任意空白处) | 移动窗口(位置记忆) |
+| **✕**(右上) | 关闭 |
+| **▼ / 双击标题栏** | 收起成一条细标题,显示 `N会话 · N运行 · N完成 · N空闲` 汇总;再点展开 |
+| **⟳** | 手动刷新限额快照(平时 10 分钟自动一次) |
+| **双击某行标题** | 给这个项目改显示名(回车保存,清空回车=还原,Esc 取消) |
+| **点某行圆点/标题** | 确认"已完成/待确认"的闪烁提醒(已读停闪) |
+| 右下角拖拽角 | 自由改宽度 |
+| **Ctrl + 滚轮** | 整体缩放(0.6x–1.6x) |
+| 右键(任意位置) | 退出 |
+
+## 状态映射(hook → 面板)
+
+| Claude Code 事件 | 面板状态 |
+|---|---|
+| `SessionStart` | ⚪ 空闲(`source=compact` 上下文压缩时不重置) |
+| `UserPromptSubmit` | 🔵 运行中 |
+| `SubagentStart/Stop` | 🔵 派N个子代理中(计数±1;主回合 Stop 时计数>0 则**保持运行中**) |
+| `Notification`(`permission_prompt`) | 🟡 待确认(闪烁) |
+| `Stop`(无存活子代理) | 🟢 已完成(闪烁至你点击确认) |
+| `SessionEnd` | 移除该行 |
+
+> 开着 `defaultMode: auto` 时权限提示极少,"待确认"基本不亮属正常;日常就是 运行中/已完成/空闲 三态。
+
+## 会话命名(三选一,优先级从高到低)
+
+1. 启动时环境变量:`CCTL_NAME=后端 claude`
+2. 项目目录放 `.cctl-name` 文件(内容即名字)
+3. widget 里**双击行标题**直接改(存在面板侧,跨会话生效)
+
+前两种是"会话级"命名(hex 短 id 自动隐藏);第三种是"项目级"别名(保留短 id 以区分同目录多开)。
+
+## 限额条说明
+
+- 数据来源:Claude Code **statusLine** stdin 里服务端下发的 `rate_limits`(仅 Claude.ai Pro/Max 订阅有);`--with-limits` 会把你现有 statusLine 命令包一层**透传**(原状态栏不受影响),顺手抄 4 个字段落地
+- **没有任何额外网络请求**;拿不到数据(非订阅/会话未产生响应)就**自动隐藏**,绝不显示估算的假条
+- 验证:`cat ~/.claude/traffic_status/ratelimits.json`,`five_used`/`week_used` 非 null 即通
+
+## 常见问题
+
+- **行名显示 `opt·2a6472` 这种?** 那是"目录名·会话短id",双击标题改名即可。
+- **状态不更新/功能缺失?** widget 是启动时加载代码的,更新后要**重启 widget**;hook 集合是**会话启动时**定死的,装完 hook 后老会话要重启才上报(`claude -c` 可续上下文)。
+- **"待确认"从来不亮?** 你开了自动批准(auto mode),属正常。
+- **多显示器/发行版不是 Ubuntu?** 启动脚本里 `CLAUDE_TRAFFIC_DIR` 改成你的 `\\wsl.localhost\<发行版>\<home>\.claude\traffic_status`。
+- **纯 Linux 桌面能用吗?** 能,widget 在 WSLg/Linux 下直接 `python3 traffic_widget.py`(读本地 `~/.claude/traffic_status`),但置顶压不住原生 Windows 窗口。
 
 ## 卸载
 
 ```bash
-python3 /opt/claude-traffic-light/uninstall.py   # 只移除本工具的 hook,保留其它
+python3 /opt/claude-traffic-light/uninstall.py   # 移除本工具的 hook + 还原 statusLine,其它一概不动
 ```
-Windows 侧的 `claude-traffic-widget` 文件夹自行删除。
+Windows 侧删掉 `claude-traffic-widget` 文件夹和启动项 `shell:startup` 里的 `claude-traffic-widget.vbs`。
+
+## 来源与致谢 · Attribution
+
+**Forked from [weilizhe8-del/claude-code-traffic-light](https://github.com/weilizhe8-del/claude-code-traffic-light) (MIT).** This is a heavily modified version:原版是 Windows 单聚合红绿灯(PowerShell hook);本 fork 改为 stdin 解析的 Python hook、每会话列表、子代理计数、限额条、确认机制等。原作者的多窗口设计文档保留在 [`design_multi_window.md`](./design_multi_window.md)。
 
 ## License
 
-MIT —— 见 [`LICENSE`](./LICENSE)(保留原作者 `Copyright (c) 2026 weilizhe8` + 本 fork 修改版权)。
+MIT — 见 [`LICENSE`](./LICENSE)(保留原作者版权声明 + 本 fork 修改版权)。
