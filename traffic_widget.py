@@ -546,8 +546,31 @@ class Widget:
             return
         try:
             import ctypes
+            from ctypes import wintypes
             user32 = ctypes.windll.user32
-            wt_hits, any_hits = [], []
+            kernel32 = ctypes.windll.kernel32
+            # ONLY terminal/editor processes — matching arbitrary windows by
+            # title raises browsers whose tabs mention the project name
+            TERM_EXES = {"windowsterminal.exe", "openconsole.exe", "conhost.exe",
+                         "wt.exe", "alacritty.exe", "wezterm-gui.exe",
+                         "mintty.exe", "code.exe", "cursor.exe"}
+            wt_hits, other_hits = [], []
+
+            def exe_of(hwnd):
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                h = kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED
+                if not h:
+                    return ""
+                try:
+                    buf = ctypes.create_unicode_buffer(260)
+                    size = wintypes.DWORD(260)
+                    if kernel32.QueryFullProcessImageNameW(h, 0, buf,
+                                                           ctypes.byref(size)):
+                        return os.path.basename(buf.value).lower()
+                    return ""
+                finally:
+                    kernel32.CloseHandle(h)
 
             @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
             def cb(hwnd, _):
@@ -555,18 +578,19 @@ class Widget:
                     return True
                 tb = ctypes.create_unicode_buffer(512)
                 user32.GetWindowTextW(hwnd, tb, 512)
-                title = tb.value
-                if not title or proj.lower() not in title.lower():
+                if not tb.value or proj.lower() not in tb.value.lower():
                     return True
-                cb_ = ctypes.create_unicode_buffer(256)
-                user32.GetClassNameW(hwnd, cb_, 256)
-                (wt_hits if "CASCADIA" in cb_.value.upper() else any_hits).append(hwnd)
+                exe = exe_of(hwnd)
+                if exe not in TERM_EXES:
+                    return True
+                (wt_hits if exe in ("windowsterminal.exe", "wt.exe")
+                 else other_hits).append(hwnd)
                 return True
 
             user32.EnumWindows(cb, 0)
-            hits = wt_hits or any_hits
+            hits = wt_hits or other_hits
             if not hits:
-                return
+                return                                    # no jump beats a wrong jump
             hwnd = hits[0]
             user32.ShowWindow(hwnd, 9)                    # SW_RESTORE
             user32.keybd_event(0x12, 0, 0, 0)             # Alt down: allows

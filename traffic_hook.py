@@ -79,6 +79,50 @@ def parse_transcript(path):
     return model, total
 
 
+STATUS_MARK = {"running": "🔵", "needs_confirmation": "🟡",
+               "finished": "🟢", "idle": "⚪"}
+
+
+def _find_tty():
+    """Controlling pts of the session (walk ancestors — the hook's own fds are
+    pipes, but the claude process / its shell sit on a /dev/pts/*)."""
+    pid = os.getpid()
+    for _ in range(15):
+        for fd in (0, 1, 2):
+            try:
+                p = os.readlink("/proc/%d/fd/%d" % (pid, fd))
+                if p.startswith("/dev/pts/"):
+                    return p
+            except OSError:
+                pass
+        try:
+            with open("/proc/%d/stat" % pid, "rb") as f:
+                ppid = int(f.read().rsplit(b")", 1)[1].split()[1])
+        except Exception:
+            return None
+        if ppid <= 1:
+            return None
+        pid = ppid
+    return None
+
+
+def set_terminal_title(status, project):
+    """Write '🔵 project' into the tab title (OSC 0), straight to the session's
+    pts — NOT stdout, so Claude's context stays clean. Turns anonymous 'Ubuntu'
+    tabs into readable, per-session titles and gives the widget's
+    click-to-jump matching something to find. Disable with CCTL_NO_TITLE=1."""
+    if os.environ.get("CCTL_NO_TITLE") or not project or project == "?":
+        return
+    tty = _find_tty()
+    if not tty:
+        return
+    try:
+        with open(tty, "w") as t:
+            t.write("\033]0;%s %s\007" % (STATUS_MARK.get(status, ""), project))
+    except OSError:
+        pass
+
+
 def read_slot(sid):
     try:
         with open(_slot(sid), "r", encoding="utf-8") as f:
@@ -111,6 +155,7 @@ def write_slot(sid, status, project, named, model=None, tokens=None, agents=None
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
     os.replace(tmp, _slot(sid))  # atomic
+    set_terminal_title(status, data["project"])
 
 
 def remove_slot(sid):
