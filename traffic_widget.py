@@ -47,6 +47,7 @@ else:
 
 STATE_FILE = os.path.join(STATUS_DIR, "__widget_pos")
 LIMITS_FILE = os.path.join(STATUS_DIR, "ratelimits.json")
+NAMES_FILE = os.path.join(STATUS_DIR, "__names")   # {project_basename: alias}
 
 # ---- tunables ---------------------------------------------------------------
 DATA_POLL_MS = 2000
@@ -157,6 +158,15 @@ def load_slots():
     return rows
 
 
+def load_names():
+    try:
+        with open(NAMES_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
 def load_limits():
     try:
         with open(LIMITS_FILE, "r", encoding="utf-8") as f:
@@ -189,6 +199,7 @@ class Widget:
         self.blink_on = False
         self.fingerprint = None
         self.slots = {}
+        self.names = {}
         self.row_widgets = {}
         self.reset_labels = []
         # sid -> (status, ts) the user acknowledged by clicking the dot;
@@ -210,9 +221,18 @@ class Widget:
         self.sum_lbl = tk.Label(self.header, text="", font=self.f_sub,
                                 fg=FG_MUTED, bg=BG, anchor="w")
         self.sum_lbl.pack(side="left")
+        self.close_lbl = tk.Label(self.header, text="✕", font=self.f_toggle,
+                                  fg=FG_MUTED, bg=BG, padx=10, pady=2,
+                                  cursor="hand2")
+        self.close_lbl.pack(side="right")
+        self.close_lbl.bind("<Button-1>", lambda e: self.root.destroy())
+        self.close_lbl.bind("<Enter>",
+                            lambda e: self.close_lbl.config(fg="#ef4444"))
+        self.close_lbl.bind("<Leave>",
+                            lambda e: self.close_lbl.config(fg=FG_MUTED))
         self.toggle_lbl = tk.Label(self.header, text="▶" if self.collapsed else "▼",
                                    font=self.f_toggle, fg="#c3c8cf", bg=BG,
-                                   padx=12, pady=2, cursor="hand2")
+                                   padx=6, pady=2, cursor="hand2")
         self.toggle_lbl.pack(side="right")
 
         self.body = tk.Frame(self.root, bg=BG)
@@ -229,11 +249,11 @@ class Widget:
         if not self.collapsed:
             self._show_body()
 
-        for w in (self.root, self.header, self.head_lbl, self.sum_lbl):
+        for w in (self.root, self.header, self.head_lbl, self.sum_lbl, self.body):
             self._bind_drag(w)
-        for w in (self.root, self.header, self.head_lbl, self.sum_lbl,
-                  self.toggle_lbl):
-            w.bind("<Button-3>", lambda e: self.root.destroy())
+        # right-click ANYWHERE quits (Tk events don't bubble from children,
+        # so per-widget binds miss most of the panel surface)
+        self.root.bind_all("<Button-3>", lambda e: self.root.destroy())
         for w in (self.header, self.head_lbl, self.sum_lbl):
             w.bind("<Double-Button-1>", self._toggle_collapse)
         self.toggle_lbl.bind("<Button-1>", self._toggle_collapse)  # single click
@@ -323,6 +343,7 @@ class Widget:
         self._make_fonts()
         self.head_lbl.config(font=self.f_head)
         self.toggle_lbl.config(font=self.f_toggle)
+        self.close_lbl.config(font=self.f_toggle)
         self._save_state()
         self.fingerprint = None
         self._sync()
@@ -331,6 +352,7 @@ class Widget:
     def _sync(self):
         slots = load_slots()
         lim = load_limits()
+        self.names = load_names()
         self.slots = {s.get("sid", ""): s for s in slots}
         lim_fp = ((round(lim.get("five_used") or -1),
                    round(lim.get("week_used") or -1)) if lim else None)
@@ -338,7 +360,8 @@ class Widget:
                          s.get("named"), s.get("model"), s.get("tokens"),
                          s.get("agents"))
                         for s in slots)
-        fp = (lim_fp, slot_fp, self.width, self.scale)
+        fp = (lim_fp, slot_fp, self.width, self.scale,
+              tuple(sorted(self.names.items())))
         if fp != self.fingerprint:
             self.fingerprint = fp
             self._rebuild(slots, lim)
@@ -406,12 +429,15 @@ class Widget:
         dot.bind("<Button-1>", lambda e, s_=sid: self._ack(s_))
 
         proj = s.get("project") or "?"
-        if len(proj) > NAME_MAX:
-            proj = proj[:NAME_MAX - 1] + "…"
-        title = proj if s.get("named") else "%s·%s" % (proj, (sid or "")[:6])
-        tl = tk.Label(row, text=title, font=self.f_title, fg=FG, bg=BG, anchor="w")
+        shown = self.names.get(proj) or proj   # widget-side alias wins
+        if len(shown) > NAME_MAX:
+            shown = shown[:NAME_MAX - 1] + "…"
+        title = shown if s.get("named") else "%s·%s" % (shown, (sid or "")[:6])
+        tl = tk.Label(row, text=title, font=self.f_title, fg=FG, bg=BG,
+                      anchor="w", cursor="hand2")
         tl.grid(row=0, column=1, sticky="w")
         tl.bind("<Button-1>", lambda e, s_=sid: self._ack(s_))
+        tl.bind("<Double-Button-1>", lambda e, s_=sid: self._rename(s_))
 
         sub = tk.Frame(row, bg=BG)
         sub.grid(row=1, column=1, sticky="w")
@@ -426,13 +452,19 @@ class Widget:
         parts = [short_model(s.get("model") or "")]
         if s.get("tokens"):
             parts.append(format_tokens(s.get("tokens")) + " tok")
+        meta_lbl = None
         meta = " · ".join(p for p in parts if p)
         if meta:
-            tk.Label(sub, text=" · " + meta, font=self.f_sub,
-                     fg=FG_MUTED, bg=BG).pack(side="left")
+            meta_lbl = tk.Label(sub, text=" · " + meta, font=self.f_sub,
+                                fg=FG_MUTED, bg=BG)
+            meta_lbl.pack(side="left")
 
         al = tk.Label(row, text="", font=self.f_sub, fg=FG_MUTED, bg=BG)
         al.grid(row=0, column=2, rowspan=2, sticky="e", padx=(6, 4))
+
+        # everything non-interactive should still drag the window
+        for w in (row, sub, st_lbl, al) + ((meta_lbl,) if meta_lbl else ()):
+            self._bind_drag(w)
 
         self.row_widgets[sid] = {"dot": dot, "dot_id": did, "title": tl,
                                  "status": st_lbl, "age": al}
@@ -451,6 +483,50 @@ class Widget:
         if s.get("status") not in ("finished", "needs_confirmation"):
             return False
         return self.acked.get(s.get("sid", "")) != (s.get("status"), s.get("ts"))
+
+    # ---- rename (double-click a row title) -----------------------------------
+    def _save_names(self):
+        try:
+            tmp = NAMES_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.names, f, ensure_ascii=False)
+            os.replace(tmp, NAMES_FILE)
+        except OSError:
+            pass
+
+    def _rename(self, sid):
+        s = self.slots.get(sid)
+        if not s:
+            return
+        proj = s.get("project") or "?"
+        top = tk.Toplevel(self.root)
+        top.overrideredirect(True)
+        top.attributes("-topmost", True)
+        top.configure(bg=BAR_TRACK)
+        top.geometry("+%d+%d" % (self.root.winfo_pointerx() + 8,
+                                 self.root.winfo_pointery() + 8))
+        entry = tk.Entry(top, font=self.f_title, bg="#1c1e22", fg=FG,
+                         insertbackground=FG, relief="flat", width=16)
+        entry.insert(0, self.names.get(proj, ""))
+        entry.pack(padx=2, pady=2)
+
+        def done(save):
+            if save:
+                v = entry.get().strip()
+                if v:
+                    self.names[proj] = v
+                else:
+                    self.names.pop(proj, None)   # empty = back to folder name
+                self._save_names()
+                self.fingerprint = None
+                self._sync()
+            top.destroy()
+
+        entry.bind("<Return>", lambda e: done(True))
+        entry.bind("<Escape>", lambda e: done(False))
+        entry.bind("<FocusOut>", lambda e: done(False))
+        top.focus_force()
+        entry.focus_set()
 
     # ---- age tick (in memory) ------------------------------------------------
     def age_tick(self):
