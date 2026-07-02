@@ -38,6 +38,7 @@ import re
 import sys
 import json
 import time
+import base64
 import subprocess
 import tkinter as tk
 
@@ -721,9 +722,18 @@ class Widget:
             if d:
                 cmd += ["-d", d]
             mark = STATUS_MARK.get(s.get("status"), "")
-            cmd += ["--", "sh", "-c",
-                    'printf "\\033]0;%s\\007" "$1" > ' + tty,   # title via $1:
-                    "sh", ("%s %s" % (mark, name)).strip()]     # quoting-safe
+            title = ("%s %s" % (mark, name)).strip()
+            # two traps here, both verified against the real wsl.exe:
+            #  * MUST be -e (exec) — with `--` the trailing positional args
+            #    never reach sh ($1 stays empty, argc=0);
+            #  * non-ASCII argv gets mangled by the Windows codepage on the
+            #    way through wsl.exe (GBK -> mojibake -> WT drops the OSC),
+            #    so the title crosses as base64 and decodes on the Linux side.
+            b64 = base64.b64encode(title.encode("utf-8")).decode("ascii")
+            cmd += ["-e", "sh", "-c",
+                    'printf "\\033]0;%s\\007" '
+                    '"$(printf %s "$1" | base64 -d)" > ' + tty,
+                    "sh", b64]
             subprocess.Popen(cmd, creationflags=0x08000000,     # NO_WINDOW
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
