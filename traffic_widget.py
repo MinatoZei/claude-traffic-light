@@ -465,11 +465,19 @@ class Widget:
         if len(shown) > NAME_MAX:
             shown = shown[:NAME_MAX - 1] + "…"
         title = shown if s.get("named") else "%s·%s" % (shown, (sid or "")[:6])
-        tl = tk.Label(row, text=title, font=self.f_title, fg=FG, bg=BG,
+        tf = tk.Frame(row, bg=BG)
+        tf.grid(row=0, column=1, sticky="w")
+        tl = tk.Label(tf, text=title, font=self.f_title, fg=FG, bg=BG,
                       anchor="w", cursor="hand2")
-        tl.grid(row=0, column=1, sticky="w")
+        tl.pack(side="left")
         tl.bind("<Button-1>", lambda e, s_=sid: self._ack(s_))
         tl.bind("<Double-Button-1>", lambda e, s_=sid: self._rename(s_))
+        pen = tk.Label(tf, text="✎", font=self.f_sub, fg="#565d68", bg=BG,
+                       cursor="hand2", padx=4)
+        pen.pack(side="left")
+        pen.bind("<Button-1>", lambda e, s_=sid: self._rename(s_))
+        pen.bind("<Enter>", lambda e, p=pen: p.config(fg=FG))
+        pen.bind("<Leave>", lambda e, p=pen: p.config(fg="#565d68"))
 
         sub = tk.Frame(row, bg=BG)
         sub.grid(row=1, column=1, sticky="w")
