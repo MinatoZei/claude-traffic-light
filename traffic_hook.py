@@ -105,13 +105,17 @@ def _scan_ancestry(sid):
         process / its shell sit on a /dev/pts/*) — for tab titles;
       * Claude Code's own session file ~/.claude/sessions/<pid>.json — the
         claude process pid IS the filename — whose `name` field is the
-        auto-generated session title Claude writes into the terminal
-        (e.g. 'fix-rename-sync-widget-terminal'), and whose pid the widget
-        keeps to live-check the file's `status` field ('busy' while a
-        background shell is still running after the turn ended). sessionId is
-        verified so a recycled pid can never attach a stranger's session.
-    Returns (tty, auto_name, claude_pid); each may be None."""
-    tty = auto = cpid = None
+        session title (a real one after /rename or plan-accept auto-naming),
+        and whose pid the widget keeps to live-check the file's `status`
+        field ('busy' while a background shell is still running after the
+        turn ended). sessionId is verified so a recycled pid can never attach
+        a stranger's session.
+    `nameSource:"derived"` marks Claude's startup placeholder (folder + two
+    hash chars, e.g. 'opt-c7') — never a display name. It is returned
+    separately as `placeholder` so write_slot can purge a stale copy of it
+    from the slot's sticky `auto`.
+    Returns (tty, auto_name, claude_pid, placeholder); each may be None."""
+    tty = auto = cpid = placeholder = None
     pid = os.getpid()
     for _ in range(15):
         if tty is None:
@@ -130,8 +134,12 @@ def _scan_ancestry(sid):
                     d = json.load(f)
                 if d.get("sessionId") == sid:
                     cpid = pid
-                    if (d.get("name") or "").strip():
-                        auto = d["name"].strip()
+                    nm = (d.get("name") or "").strip()
+                    if nm:
+                        if d.get("nameSource") == "derived":
+                            placeholder = nm
+                        else:
+                            auto = nm
             except Exception:
                 pass
         if tty and cpid:
@@ -144,7 +152,7 @@ def _scan_ancestry(sid):
         if ppid <= 1:
             break
         pid = ppid
-    return tty, auto, cpid
+    return tty, auto, cpid, placeholder
 
 
 def set_terminal_title(status, name, tty):
@@ -189,12 +197,18 @@ def write_slot(sid, status, project, named, model=None, tokens=None, agents=None
         tokens = prev.get("tokens")
     if agents is None and prev:
         agents = prev.get("agents", 0)
-    tty, auto, cpid = _scan_ancestry(sid)
-    if not tty or not auto or not cpid:   # e.g. no pts / name not generated yet
+    tty, auto, cpid, placeholder = _scan_ancestry(sid)
+    if not tty or not auto or not cpid:   # e.g. no pts / no real name yet
         if prev is None:
             prev = read_slot(sid)
         tty = tty or (prev or {}).get("tty")
-        auto = auto or (prev or {}).get("auto")
+        # sticky auto keeps a real name across events where the sessions file
+        # is unreadable — but a stored copy of the derived placeholder (slots
+        # written before placeholder filtering existed) must not resurrect
+        if not auto:
+            prev_auto = ((prev or {}).get("auto") or "").strip()
+            if prev_auto and prev_auto != placeholder:
+                auto = prev_auto
         cpid = cpid or (prev or {}).get("cpid")
     data = {"status": status, "ts": int(time.time()),
             "project": project or "?", "named": bool(named), "sid": sid,
@@ -207,12 +221,15 @@ def write_slot(sid, status, project, named, model=None, tokens=None, agents=None
         json.dump(data, f)
     os.replace(tmp, _slot(sid))  # atomic
     # tab-title name, same precedence the widget displays: user alias >
-    # explicit CCTL_NAME/.cctl-name > Claude's auto name > folder name. The
-    # slot's project field stays the real folder name regardless (stickiness
-    # + jump matching depend on it).
+    # explicit CCTL_NAME/.cctl-name > Claude's session name. The slot's
+    # project field stays the real folder name regardless (stickiness +
+    # jump matching depend on it). No real name -> DON'T stamp: Claude Code
+    # writes its own topical title ("✳ ..."), and overwriting it with a bare
+    # folder name on every Stop is exactly the "title reverts on blur" bug.
     name = load_alias(sid) or \
-        (data["project"] if data["named"] else (auto or data["project"]))
-    set_terminal_title(status, name, tty)
+        (data["project"] if data["named"] else auto)
+    if name:
+        set_terminal_title(status, name, tty)
 
 
 def remove_slot(sid):

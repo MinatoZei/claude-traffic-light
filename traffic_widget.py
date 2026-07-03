@@ -146,20 +146,22 @@ def bar_color(remaining):
     return "#22c55e"
 
 
-def claude_busy(s):
-    """Claude Code's own live status for this session: 'busy' also covers a
-    background shell still running AFTER the turn ended — something no hook
-    event reports. sessionId is verified against the slot (pid reuse)."""
+def claude_session(s):
+    """Claude Code's own live session file for this slot: its 'status' is
+    'busy' while a background shell still runs AFTER the turn ended
+    (something no hook event reports), and its 'name' updates the moment the
+    user runs /rename. sessionId is verified against the slot (pid reuse).
+    Returns the parsed dict, or None when unavailable/mismatched."""
     pid = s.get("cpid")
     if not pid:
-        return False
+        return None
     try:
         with open(os.path.join(SESSIONS_DIR, "%s.json" % pid),
                   "r", encoding="utf-8") as f:
             d = json.load(f)
-        return d.get("sessionId") == s.get("sid") and d.get("status") == "busy"
+        return d if d.get("sessionId") == s.get("sid") else None
     except Exception:
-        return False
+        return None
 
 
 def load_slots():
@@ -185,11 +187,24 @@ def load_slots():
             except OSError:
                 pass
             continue
+        cs = claude_session(d)
         # turn ended (finished/idle) but Claude still reports busy = a
         # background shell is running -> the session is NOT done. Upgrade to
         # running with a bg marker; never touches needs_confirmation.
-        if d.get("status") in ("finished", "idle") and claude_busy(d):
+        if d.get("status") in ("finished", "idle") and \
+                cs and cs.get("status") == "busy":
             d["status"], d["bg"] = "running", True
+        # live name sync: /rename lands in sessions/<pid>.json instantly but
+        # only reaches the slot file on the NEXT hook event — read it here so
+        # a rename shows within one poll. nameSource "derived" is Claude's
+        # startup placeholder ('opt-c7'), never a display name; when the
+        # stored auto IS that placeholder (slots written before the hook
+        # filtered it), drop it so the row falls back to folder·shortid.
+        nm = ((cs.get("name") or "").strip()) if cs else ""
+        if cs and nm and cs.get("nameSource") != "derived":
+            d["auto"] = nm
+        elif nm and (d.get("auto") or "").strip() == nm:
+            d["auto"] = ""
         rows.append(d)
     rows.sort(key=lambda d: (ORDER.get(d.get("status"), 9), -d.get("ts", 0)))
     return rows
