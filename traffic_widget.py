@@ -249,11 +249,14 @@ class Widget:
         self.root.configure(bg=BG)
 
         self.blink_on = False
-        self.fingerprint = None
+        self.fingerprint = None      # content fingerprint -> in-place update
+        self.struct_fp = None        # structural fingerprint -> full rebuild
         self.slots = {}
         self.names = {}
         self.row_widgets = {}
+        self.limit_widgets = {}
         self.reset_labels = []
+        self.row_order = []
         # sid -> (status, ts) the user acknowledged by clicking the dot;
         # any new event changes (status, ts) and re-arms the blink
         acked_raw = st.get("acked")
@@ -482,17 +485,29 @@ class Widget:
         lim = load_limits()
         self.names = load_names()
         self.slots = {s.get("sid", ""): s for s in slots}
+        # structure = which rows / which limit bars exist + geometry. Only
+        # this justifies a destroy-and-rebuild (visible flash); everything
+        # else — texts, colors, tokens, status, even row ORDER — is applied
+        # in place so routine status churn never makes the panel blink.
+        struct = (tuple(sorted(s.get("sid", "") for s in slots)),
+                  tuple(k for k in ("five_used", "week_used")
+                        if lim and lim.get(k) is not None),
+                  self.width, self.scale)
         lim_fp = ((round(lim.get("five_used") or -1),
-                   round(lim.get("week_used") or -1)) if lim else None)
+                   round(lim.get("week_used") or -1),
+                   lim.get("five_reset"), lim.get("week_reset"))
+                  if lim else None)
         slot_fp = tuple((s.get("sid"), s.get("status"), s.get("bg"),
                          s.get("project"), s.get("named"), s.get("auto"),
                          s.get("model"), s.get("tokens"), s.get("agents"))
                         for s in slots)
-        fp = (lim_fp, slot_fp, self.width, self.scale,
-              tuple(sorted(self.names.items())))
-        if fp != self.fingerprint:
-            self.fingerprint = fp
+        fp = (lim_fp, slot_fp, tuple(sorted(self.names.items())))
+        if struct != self.struct_fp:
+            self.struct_fp, self.fingerprint = struct, fp
             self._rebuild(slots, lim)
+        elif fp != self.fingerprint:
+            self.fingerprint = fp
+            self._update(slots, lim)
 
     def data_poll(self):
         self._sync()
@@ -503,7 +518,9 @@ class Widget:
         for child in self.body.winfo_children():
             child.destroy()
         self.row_widgets = {}
+        self.limit_widgets = {}
         self.reset_labels = []
+        self.row_order = [s.get("sid", "") for s in slots]
         self.head_lbl.config(text="Claude limits" if lim else "Claude Code")
 
         if lim:
@@ -527,8 +544,9 @@ class Widget:
             remaining = max(0, 100 - used)
             head = tk.Frame(self.body, bg=BG)
             head.pack(fill="x", padx=12, pady=(4, 0))
-            tk.Label(head, text="%s left %d%%" % (title, round(remaining)),
-                     font=self.f_lim, fg=FG, bg=BG).pack(side="left")
+            hl = tk.Label(head, text="%s left %d%%" % (title, round(remaining)),
+                          font=self.f_lim, fg=FG, bg=BG)
+            hl.pack(side="left")
             rl = tk.Label(head, text=format_reset(lim.get(reset_key)),
                           font=self.f_sub, fg=FG_MUTED, bg=BG)
             rl.pack(side="right")
@@ -537,9 +555,89 @@ class Widget:
             bar = tk.Canvas(self.body, height=6, width=bw, bg=BG, highlightthickness=0)
             bar.pack(fill="x", padx=12, pady=2)
             bar.create_rectangle(0, 0, bw, 6, fill=BAR_TRACK, outline="")
-            fillw = int(bw * remaining / 100.0)
-            if fillw > 0:
-                bar.create_rectangle(0, 0, fillw, 6, fill=bar_color(remaining), outline="")
+            # fill rect always exists (maybe zero-width) so _update_limits can
+            # resize/recolor it in place instead of rebuilding the canvas
+            fill_id = bar.create_rectangle(0, 0, int(bw * remaining / 100.0), 6,
+                                           fill=bar_color(remaining), outline="")
+            self.limit_widgets[used_key] = {"title": title, "head": hl,
+                                            "reset": rl, "bar": bar,
+                                            "fill": fill_id}
+
+    def _update_limits(self, lim):
+        """In-place refresh of the limit bars (labels, fill width, color)."""
+        self.reset_labels = []
+        if not lim:
+            return
+        bw = max(60, self.width - 24)
+        for used_key, reset_key in (("five_used", "five_reset"),
+                                    ("week_used", "week_reset")):
+            w = self.limit_widgets.get(used_key)
+            used = lim.get(used_key)
+            if not w or used is None:
+                continue
+            remaining = max(0, 100 - used)
+            w["head"].config(text="%s left %d%%" % (w["title"], round(remaining)))
+            w["reset"].config(text=format_reset(lim.get(reset_key)))
+            self.reset_labels.append((w["reset"], lim.get(reset_key)))
+            w["bar"].coords(w["fill"], 0, 0, int(bw * remaining / 100.0), 6)
+            w["bar"].itemconfig(w["fill"], fill=bar_color(remaining))
+
+    def _row_texts(self, s):
+        """(title, status_text, meta_text) for a slot — single source shared
+        by build and in-place update so the two can never drift apart."""
+        sid = s.get("sid", "")
+        proj = s.get("project") or "?"
+        alias = self.names.get(sid)            # user rename (per session)
+        auto = (s.get("auto") or "").strip()   # Claude's own session name
+        # precedence: ✎ alias > CCTL_NAME/.cctl-name > Claude auto > folder;
+        # never truncated — the window widens to fit the longest title
+        shown = alias or (proj if s.get("named") else (auto or proj))
+        if alias or s.get("named") or auto:    # already session-unique
+            title = shown
+        else:
+            title = "%s·%s" % (shown, sid[:6])
+        status = s.get("status") or ""
+        agents = s.get("agents") or 0
+        if status == "running" and agents > 0:
+            st_text = "派%d个子代理中" % agents
+        elif s.get("bg"):
+            st_text = "后台任务中"
+        else:
+            st_text = LABEL.get(status, status)
+        parts = [short_model(s.get("model") or "")]
+        if s.get("tokens"):
+            parts.append(format_tokens(s.get("tokens")) + " tok")
+        meta = " · ".join(p for p in parts if p)
+        return title, st_text, (" · " + meta) if meta else ""
+
+    def _update(self, slots, lim):
+        """Apply a data change to the existing widget tree — config() only,
+        no destroy/recreate, so nothing flashes. Row order changes are done
+        by re-packing the surviving frames in the new order."""
+        self.head_lbl.config(text="Claude limits" if lim else "Claude Code")
+        self._update_limits(lim)
+        order = [s.get("sid", "") for s in slots]
+        if order != self.row_order:
+            for sid in order:
+                w = self.row_widgets.get(sid)
+                if w:
+                    w["frame"].pack_forget()
+            for sid in order:
+                w = self.row_widgets.get(sid)
+                if w:
+                    w["frame"].pack(fill="x", padx=10, pady=3)
+            self.row_order = order
+        for s in slots:
+            w = self.row_widgets.get(s.get("sid", ""))
+            if not w:
+                continue
+            title, st_text, meta = self._row_texts(s)
+            status = s.get("status") or ""
+            w["title"].config(text=title)
+            w["status"].config(text=st_text,
+                               fg=STATUS_FG.get(status, FG_MUTED))
+            w["meta"].config(text=meta)
+        self._refresh_dynamic()
 
     def _build_row(self, s):
         sid = s.get("sid", "")
@@ -556,16 +654,7 @@ class Widget:
         dot.grid(row=0, column=0, rowspan=2, padx=(2, 9))
         dot.bind("<Button-1>", lambda e, s_=sid: self._ack(s_))
 
-        proj = s.get("project") or "?"
-        alias = self.names.get(sid)            # user rename (per session)
-        auto = (s.get("auto") or "").strip()   # Claude's own session name
-        # precedence: ✎ alias > CCTL_NAME/.cctl-name > Claude auto > folder;
-        # never truncated — the window widens to fit the longest title
-        shown = alias or (proj if s.get("named") else (auto or proj))
-        if alias or s.get("named") or auto:    # already session-unique
-            title = shown
-        else:
-            title = "%s·%s" % (shown, (sid or "")[:6])
+        title, st_text, meta = self._row_texts(s)
         tf = tk.Frame(row, bg=BG)
         tf.grid(row=0, column=1, sticky="w")
         tl = tk.Label(tf, text=title, font=self.f_title, fg=FG, bg=BG,
@@ -582,35 +671,25 @@ class Widget:
 
         sub = tk.Frame(row, bg=BG)
         sub.grid(row=1, column=1, sticky="w")
-        agents = s.get("agents") or 0
-        if status == "running" and agents > 0:
-            st_text = "派%d个子代理中" % agents
-        elif s.get("bg"):
-            st_text = "后台任务中"
-        else:
-            st_text = LABEL.get(status, status)
         st_lbl = tk.Label(sub, text=st_text, font=self.f_sub,
                           fg=STATUS_FG.get(status, FG_MUTED), bg=BG)
         st_lbl.pack(side="left")
-        parts = [short_model(s.get("model") or "")]
-        if s.get("tokens"):
-            parts.append(format_tokens(s.get("tokens")) + " tok")
-        meta_lbl = None
-        meta = " · ".join(p for p in parts if p)
-        if meta:
-            meta_lbl = tk.Label(sub, text=" · " + meta, font=self.f_sub,
-                                fg=FG_MUTED, bg=BG)
-            meta_lbl.pack(side="left")
+        # meta label always exists (possibly empty) so _update can fill it
+        # in place the moment model/tokens first become known
+        meta_lbl = tk.Label(sub, text=meta, font=self.f_sub,
+                            fg=FG_MUTED, bg=BG)
+        meta_lbl.pack(side="left")
 
         al = tk.Label(row, text="", font=self.f_sub, fg=FG_MUTED, bg=BG)
         al.grid(row=0, column=2, rowspan=2, sticky="e", padx=(6, 4))
 
         # everything non-interactive should still drag the window
-        for w in (row, sub, st_lbl, al) + ((meta_lbl,) if meta_lbl else ()):
+        for w in (row, sub, st_lbl, al, meta_lbl):
             self._bind_drag(w)
 
-        self.row_widgets[sid] = {"dot": dot, "dot_id": did, "title": tl,
-                                 "status": st_lbl, "age": al}
+        self.row_widgets[sid] = {"frame": row, "dot": dot, "dot_id": did,
+                                 "title": tl, "status": st_lbl,
+                                 "meta": meta_lbl, "age": al}
 
     # ---- acknowledge (click the blinking dot = "seen it") --------------------
     def _ack(self, sid):
